@@ -1,42 +1,27 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
 
-import java.util.Vector;
 import java.io.PrintWriter;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Vector;
+
 import Utils.Format;
 
 /**
  * Functionality related to the creation of a Flat parsable file
  */
-public class Flat extends VdbObject
+public class Flat
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private String label;                /* Label assigned to this column */
 
@@ -44,14 +29,15 @@ public class Flat extends VdbObject
   private double dblval;
   private long   longval;
   private int    type;                 /* 0: No value entered                         */
-                               /* 1: Long entered                             */
-                               /* 2: Double entered                           */
-                               /* 3: String entered                           */
+  /* 1: Long entered                             */
+  /* 2: Double entered                           */
+  /* 3: String entered                           */
   private String text;
 
   private static Vector flat_list = new Vector(32,0);
   private static PrintWriter flatfile_html = null;
   private static boolean first_print = true;
+
 
 
   public static void createFlatFile()
@@ -145,7 +131,20 @@ public class Flat extends VdbObject
    */
   private static void print_col_headers()
   {
-    String line = Format.f("%12s ", "tod");
+    /* Note: */
+    /* Note: */
+    /* Note: the first byte in this line must be blank for ParseFlat to recognize it.*/
+    String line = String.format("%12s %23s ", "tod", "timestamp");
+
+    println("*");
+    println("* 'flatfile.html' contains Vdbench generated information in a column by column ASCII format. ");
+    println("* The first line in the file contains a one word 'column header name'; the rest of the file ");
+    println("* contains data that belongs to each column. The objective of this file format is to allow ");
+    println("* easy transfer of information to a spreadsheet and therefore the creation of performance ");
+    println("* charts different from the performance charts that can be created by Sun StorageTek Workload ");
+    println("* Analysis Tool (Swat) available for download from Sun.");
+    println("* See also 'Selective flatfile parsing' in the documentation. ");
+    println("*");
 
     /* Print comments: */
     for (int i = 0; i < flat_list.size(); i++)
@@ -206,7 +205,15 @@ public class Flat extends VdbObject
         line = line + Format.f("%10s ", "n/a");
     }
 
-    common.ptod(line, flatfile_html);
+    Date now = new Date();
+    SimpleDateFormat time      = new SimpleDateFormat("HH:mm:ss.SSS");
+    SimpleDateFormat date_time = new SimpleDateFormat("MM/dd/yyyy-HH:mm:ss-zzz ");
+    String line2 = String.format("%12s %24s%s",
+                                 time.format(now),
+                                 date_time.format(now), line);
+
+    flatfile_html.println(line2);
+    //common.ptod(line, flatfile_html);
   }
 
   /**
@@ -224,6 +231,8 @@ public class Flat extends VdbObject
       add_col("bytes/io",    "Average data transfersize");
       add_col("read%",       "Observed read percentage");
       add_col("resp",        "Observed response time");
+      add_col("read_resp",   "Observed read response time");
+      add_col("write_resp",  "Observed write response time");
       add_col("resp_max",    "Observed maximum response time");
       add_col("resp_std",    "Standard deviation");
       add_col("xfersize",    "data transfer size requested");
@@ -234,6 +243,9 @@ public class Flat extends VdbObject
       add_col("seekpct",     "seek% requested");
       add_col("lunsize",     "Total amount of Gigabytes of all luns (GB= 1024*1024*1024)");
       add_col("version",     "Vdbench version identifier");
+      add_col("compratio",   "Requested compression ratio");
+      add_col("dedupratio",  "Requested dedup ratio");
+      add_col("queue_depth", "Vdbench calculated average i/o queue depth");
     }
 
     else
@@ -267,10 +279,14 @@ public class Flat extends VdbObject
       add_col("Getattr_resp", "Getattr response time");
       add_col("Setattr_rate", "Setattrs per second");
       add_col("Setattr_resp", "Setattr response time");
+      add_col("Access_rate",  "Access per second");
+      add_col("Access_resp",  "Access response time");
       add_col("Copy_rate",    "Copies per second");
       add_col("Copy_resp",    "Copy response time");
       add_col("Move_rate",    "Moves per second");
       add_col("Move_resp",    "Move response time");
+      add_col("compratio",   "Requested compression ratio");
+      add_col("dedupratio",  "Requested dedup ratio");
     }
   }
 
@@ -308,3 +324,4 @@ public class Flat extends VdbObject
     common.ptod(Format.f("xxx %s", sd));
   }
 }
+

@@ -1,0 +1,56 @@
+#!/bin/bash -x
+#
+
+GCC="/Developer/usr/bin/gcc -I /Library/java/Home/include -I /Developer/SDKs/MacOSX10.5.sdk/usr/include -I ."
+$GCC -c vdbjni.c 
+$GCC -c vdbmac.c
+$GCC -c vdb_dv.c
+$GCC -c vdb.c
+
+echo
+echo
+echo
+
+/Developer/usr/bin/gcc -dynamiclib -shared -o /Users/henk/vdbench50402/mac/libvdbench.dylib vdbjni.o vdbmac.o vdb_dv.o vdb.o
+
+exit
+
+/usr/bin/gcc  -dynamiclib -shared -o  /Users/henk/vdbench50402/mac/libvdbench.dylib vdbjni.o vdblinux.o vdb_dv.o vdb.o  -lm -shared ${LDFLAGS}
+#
+ls -l mac
+file mac/libvdbench.dylib
+
+
+
+Also found this in 'Makefile':
+
+
+
+OBJECTS  = vdbjni.o vdbmac.o vdb_dv.o vdb.o
+CC = clang
+
+CFLAGS=-m64 -v -D OSX -I/usr/include -I/Library/Java/JavaVirtualMachines/jdk1.7.0_60.jdk/Contents/Home/include/ -I. -I/System/Library/Frameworks/JavaVM.framework/Versions/A/Headers
+
+SOURCES  = $(OBJECTS:.o=.c)
+
+$(OBJECTS) : Vdb_Native.h vdbjni.c vdbmac.c
+	gcc  $(CFLAGS) -I. $(INCLUDES)   -c vdbjni.c
+	gcc  $(CFLAGS) -I. $(INCLUDES)   -c vdbmac.c
+	gcc  $(CFLAGS) -I. $(INCLUDES)   -c vdb_dv.c
+	gcc  $(CFLAGS) -I. $(INCLUDES)   -c vdb.c
+
+
+program: $(OBJECTS)
+#	gcc  $(CFLAGS) -o mac/libvdbench.so $(OBJECTS)  -lm -shared
+	gcc   $(CFLAGS) -dynamiclib -shared -o  mac/libvdbench.dylib $(OBJECTS)  -lm -shared ${LDFLAGS}
+
+vdbjni.o:       vdbjni.c
+vdbmac.o:     vdbmac.c
+vdb_dv.o:       vdb_dv.c
+vdb.o:          vdb.c
+.c.o:
+	$(CC) $(CFLAGS)  -c $(INCLUDES) $*.c
+
+clean:
+	rm *.o
+	rm mac/libvdbench.dylib

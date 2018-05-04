@@ -1,30 +1,13 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
+
 
 import java.util.Arrays;
 import java.util.HashMap;
@@ -46,10 +29,10 @@ import Utils.Format;
  */
 public class Task_num
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.";
 
-  static Vector task_list = new Vector(32, 0) ;  /* One entry per task                      */
+  static Vector <Task_num> task_list = new Vector(32, 0) ;  /* One entry per task                      */
   static int task_next = 1;    /* next task number to give out                */
 
   String task_name;            /* Optional name of task                       */
@@ -132,15 +115,15 @@ public class Task_num
 
 
   /**
-   * The task has received run request and is now running.
+   * The task is waiting for permission to start running.
    */
-  public synchronized void task_set_running()
+  public synchronized void waitForMasterGo()
   {
     while (this.task_status != Task_num.GO_RUN)
     {
       try
       {
-        wait(100);
+        wait(500);
       }
       catch (InterruptedException e)
       {
@@ -246,12 +229,69 @@ public class Task_num
 
     }
 
-    common.plog("task_wait_start_complete() end");
 
     /* Now that all tasks are ready to go, do a GC.                    */
     /* This will remove some overhead once we are really running,      */
     /* especially since the first GC apparently is the most expensive. */
-    System.gc();
+    GcTracker.gc();
+    //GcTracker.reportAlways();
+    //GcTracker.gc();
+    //GcTracker.gc();
+
+    if (false)
+    {
+
+      long current = Runtime.getRuntime().totalMemory();
+      long maxmem  = Runtime.getRuntime().maxMemory()  ;
+      long spare = maxmem - current;
+      common.ptod("spare: %,d", spare);
+      //int loops = (int) (spare / (500*1024*1024));
+      int loops = 0;
+
+      Vector dump = new Vector(1024);
+      while (true)
+      {
+        try
+        {
+          loops ++;
+          common.ptod("loops1: " + loops);
+          GcTracker.reportAlways();
+          dump.add(new byte[ 500*1024*1024]);
+        }
+
+        catch (OutOfMemoryError e)
+        {
+          common.memory_usage();
+          common.where();
+          break;
+        }
+      }
+
+      while (true)
+      {
+        try
+        {
+          loops ++;
+          common.ptod("loops2: " + loops);
+          GcTracker.reportAlways();
+          dump.add(new byte[ 100*1024*1024]);
+        }
+
+        catch (OutOfMemoryError e)
+        {
+          common.memory_usage();
+          common.where();
+          break;
+        }
+      }
+
+
+      dump = null;
+
+      System.exit(777);
+    }
+
+    common.plog("task_wait_start_complete() end");
   }
 
 
@@ -381,7 +421,7 @@ public class Task_num
             {
               /* Is it necessary to repeat the interrupt request? */
               /* It works, so just leave it. */
-              tn.task_thread.interrupt();
+              common.interruptThread(tn.task_thread);
               new_interrupts++;
               tot_ints++;
             }
@@ -404,7 +444,7 @@ public class Task_num
         common.plog("Interrupts issued for tasks " + id + ": " + tot_ints);
       }
 
-      common.sleep_some(10);
+      common.sleep_some(100);
     }
   }
 
@@ -419,13 +459,36 @@ public class Task_num
     for (int i = 0; i < task_list.size(); i++)
     {
       Task_num tn = (Task_num) task_list.elementAt(i);
-      //common.ptod("countTasks: " + name + " " + tn.task_name + " " + tn.task_status);
+      common.ptod("countTasks: " + name + " " + tn.task_name + " " + tn.task_status);
       if (tn.task_status == status && tn.task_name.startsWith(name))
         count++;
     }
 
     //common.ptod("count: " + count);
     return count;
+  }
+
+  /**
+   * Scan through all FwgThread tasks to see if they are all in termination
+   * status.
+   */
+  public synchronized static boolean checkAllInTermination()
+  {
+    /* Count the number of FwgThreads, also count TERM status: */
+    int fwgt_count = 0;
+    int term_count = 0;
+    for (Task_num tn : task_list)
+    {
+      if (tn.task_name.startsWith("FwgThread"))
+      {
+        fwgt_count++;
+        if (tn.task_status == TERM)
+          term_count++;
+      }
+    }
+
+    return fwgt_count == term_count;
+
   }
 
   public synchronized static void printTasks()

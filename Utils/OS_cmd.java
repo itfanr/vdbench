@@ -1,34 +1,19 @@
 package Utils;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
 
-import java.util.Vector;
 import java.io.*;
+import java.util.Vector;
+
 import javax.swing.*;
+
+import Vdb.Signal;
 
 
 /**
@@ -36,9 +21,8 @@ import javax.swing.*;
   */
 public class OS_cmd
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
-
+  private final static String c =
+  "Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.";
 
   private   String         command_line   = "";
 
@@ -267,18 +251,18 @@ public class OS_cmd
       cmd_array = new String[] { "cmd", "/q /c", command_line};
 
     else if (common.onSolaris())
-      cmd_array = new String[] { "/bin/ksh", "-c", command_line};
+      cmd_array = new String[] { "/bin/bash", "-c", command_line};
 
     else if (common.onAix())
       cmd_array = command_line.split(" +");
 
     else
-      cmd_array = new String[] { "/bin/csh", "-c", command_line};
+      cmd_array = new String[] { "/bin/bash", "-c", command_line};
 
     /* chmod commands just clutter up the output: */
     if (log_command && command_line.indexOf("chmod") == -1)
     {
-      common.ptod("execute(): " + command_line);
+      Vdb.common.ptod("execute(): " + command_line);
     }
 
 
@@ -316,18 +300,22 @@ public class OS_cmd
         return true;
       }
 
+      //double start_ms = System.currentTimeMillis();
       lproc.waitFor();
-      //common.ptod("lproc.exitValue(): " + lproc.exitValue());
       rc = (lproc.exitValue() == 0);
-      //common.ptod("rc2: " + rc + " " + this + " " + getCmd());
 
       /* Wait for command to finish, unless it is specifically background: */
+      Signal signal = new Signal(1000);
       while (output_stream.isAlive() && !command_line.trim().endsWith("&"))
       {
-        common.sleep_some_no_int(1000);
-        if (output_stream.isAlive())
+        common.sleep_some_no_int(2);
+        if (output_stream.isAlive() && signal.go())
           common.plog("Waiting for command1 '" + command_line + "' completion");
       }
+
+      //double end_ms = System.currentTimeMillis();
+      //Vdb.common.ptod("OS_cmd elapsed time: %8.3f seconds. %s",
+      //                (end_ms - start_ms) / 1000., command_line);
 
       /* Delete temp file once the command is done:                                  */
       /* (Don't want to wait for Java termination which in some cases can take days) */
@@ -337,9 +325,14 @@ public class OS_cmd
 
     catch (InterruptedException e)
     {
-      common.ptod("InterruptedException: " + e);
+      common.ptod("InterruptedException, continuing: " + e);
+      stderr.add("InterruptedException, continuing: " + Vdb.common.get_stacktrace(e));
+
+      rc = false;
       removeKillAtEnd();
+      return false;
     }
+
     catch (Exception e)
     {
       for (int i = 0; stderr != null && i < stderr.size(); i++)
@@ -351,15 +344,25 @@ public class OS_cmd
       {
         rc = false;
         removeKillAtEnd();
-        return rc;
+        common.ptod("Exception ignored.");
+        return false;
       }
+
       common.ptod("Error occurred in os_command(3) " + command_line);
       e.printStackTrace();
 
       if (command_line.indexOf("chmod") != -1)
         common.ptod("chmod command failed; error ignored.");
       else
-        common.failure(e);
+      {
+        common.ptod("InterruptedException, continuing: " + e);
+        stderr.add("InterruptedException, continuing: " + Vdb.common.get_stacktrace(e));
+
+        rc = false;
+        removeKillAtEnd();
+        common.ptod("Exception ignored.");
+        return false;
+      }
     }
 
     if (!command_line.trim().endsWith("&"))
@@ -538,7 +541,7 @@ public class OS_cmd
     {
       try
       {
-        tmp_file = File.createTempFile("sun", ".bat");
+        tmp_file = File.createTempFile("vdb", ".bat");
       }
       catch (IOException e)
       {
@@ -587,33 +590,6 @@ public class OS_cmd
     ocmd.execute();
     common.sleep_some_no_int(3000);
     ocmd.killCommand();
-  }
-
-
-  /**
-   * For GUI requests, append data to the JTextArea.
-   */
-  public void appendToTextArea(JTextArea ta, String line, boolean more)
-  {
-    /* Append to the end of the text and scroll to bottom: */
-    ta.append(line + "\n");
-
-    /* If there is more data waiting, return. Don't set JTextArea at end yet: */
-    if (more)
-      return;
-
-    /* Limit the amount of data to 200k: */
-    synchronized (ta)
-    {
-      int len = ta.getText().length();
-      if (len > 200000)
-      {
-        String txt =  "Display buffer too large; Truncated from 200k to 190k.\n";
-        ta.setText(txt + ta.getText().substring(len - 190000));
-      }
-
-      ta.setCaretPosition(ta.getText().length());
-    }
   }
 }
 
@@ -689,7 +665,7 @@ class Get_cmd_stream extends Thread
           //common.ptod("current_command.save_and_print: " + current_command.save_and_print);
 
           /* Always save output in a Vector: */
-          if (output_vector != null)
+          if (output_vector != null && current_command.output_method == null)
             output_vector.addElement(line);
 
           if (current_command.save_and_print)

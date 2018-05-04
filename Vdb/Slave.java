@@ -1,34 +1,16 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
 
 import java.io.*;
-import java.util.*;
 import java.net.*;
+import java.util.*;
 
 import Utils.Format;
 import Utils.Fput;
@@ -38,8 +20,8 @@ import Utils.Fput;
  */
 public class Slave
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private int    slave_jvmno; /* Sequence number of the JVM on this host      */
   private String slave_name;  /* Combination of host and vdbench start time   */
@@ -55,7 +37,7 @@ public class Slave
 
   private SlaveStarter slave_starter;
 
-  private HashMap      sds_used     = new HashMap(16);
+  private HashMap <String, String> names_used = new HashMap(16);
 
   private boolean seqwork_done             = false;
   private boolean connected                = false;
@@ -71,7 +53,8 @@ public class Slave
 
   private Report  console_log = null;   /* stdout and stderr goes here */
 
-  public  Vector  wgs_for_slave = null;
+  /* This list has info ONLY for the RD currently being handled. */
+  private ArrayList  <WG_entry> wgs_for_slave = new ArrayList(16);
 
   private Work    current_work = null;
 
@@ -83,19 +66,28 @@ public class Slave
 
   public String abort_msg = null;
 
-  private static boolean any_slave_aborted = false;
+  public int threads_given_to_slave = 0;
 
+  private ThreadMonList threadmon_totals = new ThreadMonList();
+
+  private static boolean any_slave_aborted = false;
+  public  static int  max_slave_name = 0;
 
   /**
    * Create a Slave instance.
+   *
    * Note: there is a dependency in SlaveJvm with the slave_label. The very
    * first slave_label on any host must end with '-0'.
+   * (See SlaveJvm.scan_args())
    */
   public Slave(Host host_in, int jvmno)
   {
     host         = host_in;
     slave_jvmno  = jvmno;
     slave_label  = host.getLabel() + "-" + jvmno;
+
+    /* See note above about slave name dependency!!! */
+    max_slave_name = Math.max(max_slave_name, slave_label.length());
 
     slave_number = SlaveList.getSlaveCount();
     slave_name   = host.getIP()    + "-" + (slave_number + 10) + "-" + Vdbmain.getRunTime();
@@ -159,7 +151,7 @@ public class Slave
     }
     catch (UnknownHostException e)
     {
-      common.ptod("UnknownHostException: " + host);
+      common.ptod("UnknownHostException: hd=%s,system=%s", host.getLabel(), host.getIP());
       return false;
     }
   }
@@ -248,6 +240,8 @@ public class Slave
 
   public void setCurrentWork(Work work)
   {
+    //common.ptod("setCurrentWork: %s %s", getLabel(), work);
+    //common.where(4);
     current_work = work;
   }
   public Work getCurrentWork()
@@ -289,10 +283,13 @@ public class Slave
     return slave_starter;
   }
 
-  public void setConnected()
+  public void setConnected(String pid)
   {
     connected = true;
-    common.plog("Slave " + this.slave_label + " connected");
+    common.plog("Slave %s (pid %6s) connected to master %s", this.slave_label, pid,
+                common.getProcessIdString());
+    Status.printStatus(String.format("Slave %s (pid %6s) connected to master %s", slave_label, pid,
+                  common.getProcessIdString()), null);
   }
   public boolean isConnected()
   {
@@ -356,24 +353,26 @@ public class Slave
   {
     for (int i = 0; i < wgs_for_slave.size(); i++)
     {
-      WG_entry wg = (WG_entry) wgs_for_slave.elementAt(i);
+      WG_entry wg = (WG_entry) wgs_for_slave.get(i);
       if (wg.sd_used == sd)
         return true;
     }
     return false;
   }
 
-  public void addSd(SD_entry sd, String lun)
+  /**
+   * Maintain a list of which SD or FSD anchor names are used on this slave.
+   * This info will be used with Data Validation to make sure that an SD or FSD
+   * always stays on the same slave.
+   */
+  public void addName(String name)
   {
-    sds_used.put(sd, lun);
+    names_used.put(name, name);
   }
-  public HashMap getSdMap()
+
+  public String[] getNamesUsedList()
   {
-    return sds_used;
-  }
-  public SD_entry[] getSdList()
-  {
-    return(SD_entry[]) sds_used.keySet().toArray(new SD_entry[0]);
+    return (String[]) names_used.keySet().toArray(new String[0]);
   }
 
 
@@ -389,6 +388,119 @@ public class Slave
   public boolean getStructurePending()
   {
     return structure_pending;
+  }
+
+
+  public void clearWorkloads()
+  {
+    wgs_for_slave.clear();
+    names_used.clear();
+  }
+
+  public void addWorkload(WG_entry wg, RD_entry rd)
+  {
+    //common.where(8);
+    wgs_for_slave.add(wg);
+    addName(wg.sd_used.sd_name);
+    //common.ptod("addWorkload() to rd=%-10s,slave=%s %s (%d)",
+    //            rd.rd_name, getLabel(), wg.report(rd), wgs_for_slave.size());
+  }
+
+  public ArrayList <WG_entry> getWorkloads()
+  {
+    //common.where(8);
+    //common.ptod("wgs_for_slave: " + wgs_for_slave.size());
+    return wgs_for_slave;
+  }
+
+
+  /**
+   * Remove a workload from the slave.
+   * Note that we can not just compare the instance. That could be a clone, so
+   * we therefore need to compare the wd_name and sd.
+   */
+  public int removeWorkload(WG_entry remove)
+  {
+    //common.ptod("remove:      %s %s", remove.wd_name, remove.sd_used.sd_name);
+
+    int removes = 0;
+    for (int i = 0; i < wgs_for_slave.size(); i++)
+    {
+      WG_entry wg = wgs_for_slave.get(i);
+      //common.ptod("removeWorkload slave=%s wg.wd_name.: %s %s %s",
+      //            getLabel(), wg.wd_name, wg.sd_used.sd_name, remove.sd_used.sd_name );
+      if (wg.wd_name.equals(remove.wd_name) && wg.sd_used == remove.sd_used)
+      {
+        wgs_for_slave.set(i, null);
+        removes++;
+        RD_entry.printWgInfo("Removed wd=%s from slave=%s", wg.wd_name, getLabel());
+      }
+    }
+    while (wgs_for_slave.remove(null));
+
+    //for (WG_entry wg : wgs_for_slave)
+    //  common.ptod("removeWorkload slave=%s wd left: %s ", getLabel(), wg.wd_name);
+
+    return removes;
+  }
+
+
+  /**
+   * Count the SDs that request sequential processing.
+   */
+  public int sequentialFilesOnSlave()
+  {
+    int files = 0;
+
+    for (WG_entry wg : wgs_for_slave)
+    {
+      wg.seq_eof = false;
+      if (wg.seekpct < 0)
+        files ++;
+    }
+
+    if (files == 0)
+      files = -1;
+
+    return files;
+  }
+
+
+  /**
+   * Store ThreadMonitor information about important threads on a Slave level.
+   */
+  public void accumMonData(ThreadMonList deltas)
+  {
+    /* As always, we'll ignore warmup: */
+    if (!Reporter.isWarmupDone())
+      return;
+
+    for (ThreadMonData td : deltas.list)
+    {
+      ThreadMonData total = threadmon_totals.map.get(td.label);
+      if (total == null)
+        threadmon_totals.map.put(td.label, td);
+      else
+        total.accum(td);
+    }
+
+    /* Increment total elapsed time: */
+    threadmon_totals.elapsed += deltas.elapsed;
+  }
+
+  public ThreadMonList reportThreadMonSlaveTotals()
+  {
+    /* First convert the current HashMap to an ArrayList: */
+    threadmon_totals.list = new ArrayList(threadmon_totals.map.values());
+
+    /* Now report that list: */
+    ThreadMonitor.reportTotals(getLabel(),threadmon_totals );
+
+    /* Clear them for the next interval: */
+    threadmon_totals.map.clear();
+    threadmon_totals.list.clear();
+
+    return threadmon_totals;
   }
 }
 

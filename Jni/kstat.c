@@ -1,42 +1,26 @@
 
 
 /*
- * Copyright (c) 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
 
 
-#include <jni.h>
-#include <fcntl.h>
+#include "vdbjni.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 #include <string.h>
 #include <kstath.h>
-#include <vdbjni.h>
 #include <kstat.h>
+#include <errno.h>
 
+
+static char c[] =
+  "Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved.";
 
 
 kstat_ctl_t *global_kstat_kc;
@@ -125,7 +109,11 @@ JNIEXPORT jlong JNICALL Java_Vdb_Native_getKstatData(JNIEnv *env,
   }
 
   if ( kstat_read(global_kstat_kc, kstatp, &kio) == -1 )
+  {
+    sprintf(ptod_txt, "Java_Vdb_Native_getKstatData: errno: %d", errno);
+    PTOD(ptod_txt);
     return -1;
+  }
 
 
   (*env)->SetLongField(env, ks, nread       , (jlong) kio.nread       );
@@ -225,10 +213,10 @@ extern kstat_t* get_kstat_t(JNIEnv *env, const char *instance)
     {
 
       /* If this was the correct device, return pointer to kstat_t: */
-      //PTODS("ks_name: %s", ksp->ks_name);
+      //PTOD1("ks_name: %s", ksp->ks_name);
       if ( strcmp(instance, ksp->ks_name) == 0 )
       {
-        //PTODS("======================================ks_name: %s", ksp->ks_name);
+        //PTOD1("======================================ks_name: %s", ksp->ks_name);
         //kstat_close(global_kstat_kc);
         return ksp;
       }

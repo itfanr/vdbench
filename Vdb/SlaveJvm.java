@@ -1,41 +1,24 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
 
-import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.net.ConnectException;
 import java.net.UnknownHostException;
 import java.util.Vector;
 
-import Oracle.OracleStats;
+import User.ControlUsers;
+import User.UserData;
 
-import Utils.*;
+import Utils.Getopt;
+import Utils.Semaphore;
 
 
 
@@ -47,8 +30,8 @@ import Utils.*;
  */
 public class SlaveJvm
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private static String master_ip   = null;
   private static String slave_name  = null;
@@ -64,8 +47,6 @@ public class SlaveJvm
   private static Semaphore master_done_semaphore = new Semaphore(0);
   private static boolean workload_done;
 
-  private static boolean replay   = false;;
-  private static String  replay_file;
 
   private static boolean fwd_workload = false;
   private static boolean this_is_an_active_slave = false;
@@ -85,16 +66,6 @@ public class SlaveJvm
   public static boolean isFirstSlaveOnHost()
   {
     return first_slave_on_host;
-  }
-
-  public static void setReplay(boolean bool, String fname)
-  {
-    replay      = bool;
-    replay_file = fname;
-  }
-  public static boolean isReplay()
-  {
-    return replay;
   }
 
   public static void setKstatError()
@@ -156,11 +127,13 @@ public class SlaveJvm
     return socket_to_master;
   }
 
+  public static void sendMessageToConsole(String format, Object ... args)
+  {
+    sendMessageToConsole(String.format(format, args));
+  }
   public static void sendMessageToConsole(Object txt_or_vector)
   {
     if (!(txt_or_vector instanceof String))
-    //  common.plog("sendMessageToConsole: " + txt_or_vector);
-    //else
     {
       synchronized (common.ptod_lock)
       {
@@ -172,6 +145,12 @@ public class SlaveJvm
 
     sendMessageToMaster(SocketMessage.CONSOLE_MESSAGE, txt_or_vector);
   }
+  public static void sendMessageToSummary(String format, Object ... args)
+  {
+    SocketMessage sm = new SocketMessage(SocketMessage.SUMMARY_MESSAGE);
+    sm.setData(String.format(format, args));
+    socket_to_master.putMessage(sm);
+  }
 
   public static void sendMessageToMaster(int msgno)
   {
@@ -181,6 +160,12 @@ public class SlaveJvm
   {
     SocketMessage sm = new SocketMessage(msgno);
     sm.setData(data);
+
+    if (socket_to_master == null)
+    {
+      common.ptod("Trying to send message '%s' to master, but we have no socket yet: ", (String) data);
+      common.failure("Missing socket");
+    }
     socket_to_master.putMessage(sm);
   }
 
@@ -194,6 +179,10 @@ public class SlaveJvm
     {
       SocketMessage sm = socket_to_master.getMessage();
 
+      /* GC debugging: report GC usage: */
+      GcTracker.report();
+
+
       if (sm.getMessageNum() == SocketMessage.WORK_TO_SLAVE)
       {
         /* Start the thread that processes the Work list: */
@@ -202,9 +191,28 @@ public class SlaveJvm
 
       else if (sm.getMessageNum() == SocketMessage.REQUEST_SLAVE_STATISTICS)
       {
-        if (common.get_debug(common.ORACLE))
-          OracleStats.report(1000);
-        CollectSlaveStats.sendStatsToMaster(socket_to_master, sm.getInfo());
+        Fifo.printFifoStatuses();
+
+        if (ThreadMonitor.active())
+        {
+          ThreadMonitor.reportAllDetail(ThreadMonitor.getAllData());
+          ThreadMonitor.saveAllPrevious();
+        }
+
+        /* Check with the UserClass code: */
+        Vector userdata = User.ControlUsers.getIntervalDataForMaster();
+
+        /* Forcing delay in the return of statistics: */
+        if (common.get_debug(common.HOLD_UP_STATISTICS) &&
+            sm.getInfo() % 5 == 0)
+          common.sleep_some(3000);
+
+        /* Send all data to the master: */
+        SlaveStats sts = CollectSlaveStats.getStatsForMaster(sm.getInfo());
+        sts.setUserData(userdata);
+        sm = new SocketMessage(SocketMessage.SLAVE_STATISTICS, sts);
+        socket_to_master.putMessage(sm);
+
         if (common.get_debug(common.PRINT_MEMORY))
         {
           common.memory_usage();
@@ -212,15 +220,30 @@ public class SlaveJvm
         }
       }
 
+      else if (sm.getMessageNum() == SocketMessage.USER_DATA_TO_SLAVES)
+        ControlUsers.receivedIntervalDataFromMaster((UserData[]) sm.getData());
+
       else if (sm.getMessageNum() == SocketMessage.GET_LUN_INFO_FROM_SLAVE)
       {
-        InfoFromHost.getInfoForMaster((InfoFromHost) sm.getData());
+        InfoFromHost hinfo = (InfoFromHost) sm.getData();
+        InfoFromHost.getInfoForMaster(hinfo);
+
+        /* This call assures that remote clients also have their maps cleaned up: */
+        if (hinfo.validate)
+          MapFile.cleanupOrphanMapFiles();
       }
 
       else if (sm.getMessageNum() == SocketMessage.SLAVE_GO)
       {
         if (SlaveWorker.work == null)
           common.failure("Received 'SLAVE_GO' message without first receiving Work");
+
+        /* Before we start all work, get the thread monitor baselines: */
+        if (ThreadMonitor.active())
+        {
+          ThreadMonitor.getAllData();
+          ThreadMonitor.saveAllPrevious();
+        }
 
         wait_to_run.release();
 
@@ -234,16 +257,19 @@ public class SlaveJvm
           if (common.onSolaris())
             NfsStats.getAllNfsDeltasFromKstat();
         }
+
       }
 
       else if (sm.getMessageNum() == SocketMessage.WORKLOAD_DONE)
       {
         SlaveJvm.setWorkloadDone(true);
         SlaveJvm.setMasterDone();
+        Fifo.printQueues();
       }
 
       else if (sm.getMessageNum() == SocketMessage.CLEAN_SHUTDOWN_SLAVE)
       {
+        common.ptod("Master is requesting slave shutdown");
         break;
       }
 
@@ -307,11 +333,13 @@ public class SlaveJvm
     {
       /* OS is also determined in InfoFromHost.getInfoForMaster(), but it was */
       /* found that I will need the OS earlier. Old code has not been removed */
-      String data[] = new String[4];
+      String data[] = new String[SocketMessage.SIGNON_INFO_SIZE];
       data[0] = master_ip;
       data[1] = slave_name;
       data[2] = System.getProperty("os.name");
       data[3] = System.getProperty("os.arch");
+      data[4] = "" + common.getProcessId();
+      data[5] = "" + System.currentTimeMillis();
 
       sm.setData(data);
       socket_to_master.putMessage(sm);
@@ -343,9 +371,19 @@ public class SlaveJvm
     /* Let the rest of the code know that this is a slave jvm: */
     this_is_an_active_slave = true;
 
+    /* Needed to test under VirtualBox: */
+    for (String arg : args)
+    {
+      if (arg.equals("-d100"))
+        common.set_debug(common.USE_TMP_SHARED_LIBRARY);
+    }
+
     try
     {
       Thread.currentThread().setPriority( Thread.MAX_PRIORITY );
+
+      /* Allocate shared JNI memory right away before we ever call JNI: */
+      Native.allocSharedMemory();
 
       /* Get execution parameters:   */
       scan_args(args);
@@ -356,7 +394,6 @@ public class SlaveJvm
         common.log_html =
         common.stdout   = new PrintWriter(System.out, true);
       }
-
 
       /* Connect to the master: */
       connectToMaster();
@@ -381,7 +418,6 @@ public class SlaveJvm
       //ThreadControl.printActiveThreads();
 
       common.memory_usage();
-      VdbCount.listCounters("End of SlaveJvm");
 
       /* We're done: */
       if (first_slave_on_host)
@@ -397,15 +433,23 @@ public class SlaveJvm
       common.abnormal_term(t);
     }
 
-    Native.free_jni_shared_memory();
+    Jnl_entry.closeAllMaps();
 
     sendMessageToMaster(SocketMessage.CLEAN_SHUTDOWN_COMPLETE);
 
-    Jnl_entry.closeAllMaps();
+    /* Sleep just a bit so that above message gets the chance to be sent: */
+    if (common.onWindows() && System.getProperty("os.name").contains("2008"))
+    {
+      common.ptod("This is Windows 2008. Sleeping five seconds before terminating slave.");
+      common.sleep_some(5000);
+    }
+    else
+      common.sleep_some(500);
 
     /* This shutdown causes OS_cmd() to signal 'done' to master if windows used rsh: */
-    if (SlaveList.getSlaveCount() == 0)
-      common.exit(0);
+    /* (No longer sure about the what and why here) */
+    //if (SlaveList.getSlaveCount() == 0)
+    common.exit(0);
 
   }
 
@@ -463,6 +507,7 @@ public class SlaveJvm
     return rd_mount;
   }
 
+
   public static boolean isWorkloadDone()
   {
     return workload_done;
@@ -471,7 +516,10 @@ public class SlaveJvm
   {
     workload_done = bool;
     if (workload_done)
+    {
       workload_done_semaphore.release();
+      //common.where(8);
+    }
 
     else
       workload_done_semaphore = new Semaphore(0);
@@ -511,5 +559,9 @@ public class SlaveJvm
   public static String getSlaveLabel()
   {
     return slave_label;
+  }
+  public static String getSlaveName()
+  {
+    return slave_name;
   }
 }

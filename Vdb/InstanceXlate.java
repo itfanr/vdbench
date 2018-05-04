@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -32,15 +14,12 @@ import Utils.*;
 
 public class InstanceXlate
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.";
 
-  private static String   IO_STAT         = "/usr/bin/iostat -xpX";
+  private static String   IO_STAT         = "/usr/bin/iostat -xp";
   private static String[] left_lines      = null;
   private static String[] right_lines     = null;
-
-  private static Date     last_ls_command = new Date(0);
-  private static String[] ls_lines        = null;
 
 
   public static void main(String[] args)
@@ -102,8 +81,6 @@ public class InstanceXlate
    * Each line in the vector is:
    * - lun /dev/rdsk/cxxx
    * - instance sd1,a
-   * - major device number
-   * - minor device number.
    *
    * This is obtained from merging two iostat -xd outputs, one with and one
    * without the 'n' parameter, together with output from the 'ls /dev/rdsk'
@@ -115,84 +92,38 @@ public class InstanceXlate
   {
     long start = System.currentTimeMillis();
     int attempts = 0;
-    Vector output_lines = new Vector(256, 0);;
+    Vector output_lines = new Vector(256, 0);
 
 
-    // /home/henkv/swat/swat -c -n -v300   /home/henkv/swat/monitor_data/local
-
-    /* Not every system supports the 'X' parameter. Try it: */
-    OS_cmd tmp = OS_cmd.execute(IO_STAT);
-    if (!tmp.getRC())
-      IO_STAT = "/usr/bin/iostat -xp";
-
-    //
-    // don't do this more than 'x' times per hour!!!!
-    // it can be too expensive!
-    //
-    //
-
-    // Changed from -rlL on 4/15/09. Don't need the 'L', and removing
-    // eliminates 'ls' from hanging on bad devices.
-    // Didn't need major/minor, but just left them zero.
-    String LS_DEV  = "/usr/bin/ls -rl /dev/rdsk";
-
-    /* In theory it is possible for there to be a slight difference  */
-    /* in the length of the output of either command, cause by a new */
-    /* device being added in the middle of things.                   */
-    /* That should be resolved in fice tries:                        */
+    /* In theory it is possible for there to be a slight difference   */
+    /* in the length of the output of either command, caused by a new */
+    /* device being added in the middle of things.                    */
+    /* That should be resolved in five tries:                         */
     do
     {
       /* Make sure we start with an empty array: */
-      left_lines = new String[0];
+      left_lines  = new String[0];
       right_lines = new String[0];
 
       if (attempts++ > 5)
         common.failure("failed to get a stable configuration listing");
 
       /* Get all the LEFT data for instance names: */
-      OS_cmd left = OS_cmd.execute(IO_STAT);
-      if (!left.getRC())
+      if ((left_lines = getIostatData("")) == null)
         continue;
-
-      left_lines = left.getStdout();
 
       /* Get all the RIGHT data for device names names: */
-      OS_cmd right = OS_cmd.execute(IO_STAT + "n");
-      if (!right.getRC())
+      if ((right_lines = getIostatData("n")) == null)
         continue;
-
-      right_lines = right.getStdout();
 
     } while (left_lines.length != right_lines.length);
 
 
-    /* Match left and right (ignore column headers): */
-    /* But don't do it more often than once every 'n' minutes, because */
-    /* the ls command in a large shop can get expensive:               */
-    if (new Date().getTime() > last_ls_command.getTime() + 900000)
-    {
-      OS_cmd lsdev = OS_cmd.execute(LS_DEV);
-
-      /* There was one instance where ls returned non-zero because of garbage. */
-      /* Vdbench aborted. devfsadm -C fixed it. Removed rc check:              */
-      if (!lsdev.getRC())
-      {
-        common.ptod("Non-zero returncode from " + LS_DEV + "; continuing");
-        ls_lines = lsdev.getStderr();
-        for (int i = 0; i < ls_lines.length; i++)
-          common.ptod("stderr: " + ls_lines[i]);
-      }
-
-      //  common.failure("Unable to execute command: " + LS_DEV);
-      ls_lines = lsdev.getStdout();
-      last_ls_command = new Date();
-    }
 
     if (common.get_debug(common.FAKE_LIBDEV))
     {
       left_lines  = Fget.readFileToArray("iostat_left");
       right_lines = Fget.readFileToArray("iostat_right");
-      ls_lines    = Fget.readFileToArray("iostat_ls");
     }
 
 
@@ -204,73 +135,37 @@ public class InstanceXlate
       String instance = linel.substring(0, linel.indexOf(" "));
       String name     = liner.substring(liner.lastIndexOf(" ") + 1);
 
+      /* Solaris $%#@#$%%^&&^%$#-up again: */
+      if (name.trim().length() == 0)
+        continue;
+
       /* These are the only ones that I recognize right now: */
       if (!(instance.startsWith("sd")  ||
             instance.startsWith("ssd") ||
+            instance.startsWith("blkdev")  ||  // NVME? David Carlson 03/11/14
+            instance.startsWith("flmdisk") ||
             instance.startsWith("ramdisk") ||
             instance.startsWith("dad") ||
             instance.startsWith("st")  ||
             instance.startsWith("vdc") ||
+            instance.startsWith("xdf") ||
             instance.startsWith("xvf") ||
+            instance.startsWith("zvblk") ||
             instance.startsWith("cmdk") ||   // For XVM?
             instance.startsWith("nfs")))
+      {
+        //common.ptod("simulateLibdev unknown: " + instance);
         continue;
+      }
 
-      if (name.indexOf(".fp") != -1)
+      if (name.indexOf(".fp") != -1)  // mpxio code obsolete
         name = name.substring(0, name.indexOf(".fp"));
 
-      /* Look in ls /dev output for a line ENDING with the disk name (includes partition) */
-      boolean found = false;
-      String ls = null;
-      for (int j = 0; j < ls_lines.length; j++)
-      {
-        ls = ls_lines[j];
-        String[] split = ls.split(" +");
-        if (split.length < 9)
-          continue;
-        if (split[8].endsWith(name))
-        {
-          found = true;
-          long devnum = 0; // xlateLS(ls);
-          output_lines.addElement(Format.f("/dev/rdsk/%-50s", name) +
-                                  Format.f(" %-12s ", instance) + " " +
-                                  (devnum >> 32) + " " + (int) devnum +
-                                  " ends");
-          break;
-        }
-      }
+      if (instance.startsWith("nfs"))
+        output_lines.addElement(name + " " + instance);
+      else
+        output_lines.addElement("/dev/rdsk/" + name + " " + instance);
 
-
-      /* Else look for a line CONTAINING the disk name (excludes partition) */
-      if (!found)
-      {
-        for (int j = 0; j < ls_lines.length; j++)
-        {
-          ls = ls_lines[j];
-          if (ls.indexOf(name) != -1)
-          {
-            //common.ptod("ls: " + ls.substring(ls.lastIndexOf(" ")));
-            String[] split = ls.split(" +");
-            //int slice = translateSliceToNumber(ls.substring(ls.lastIndexOf(" ")));
-            int slice = translateSliceToNumber(split[8]);
-            if (slice == -1)
-              continue;
-
-
-            found = true;
-            long devnum = 0; //xlateLS(ls);
-            output_lines.addElement(Format.f("/dev/rdsk/%-50s", name) +
-                                    Format.f(" %-12s ", instance) + " " +
-                                    (devnum >> 32) + " " + (int) (devnum - slice) +
-                                    " indx");
-            break;
-          }
-        }
-      }
-
-      if (!found)
-        output_lines.addElement(Format.f("%-50s", name) +
-                                Format.f(" %-12s ", instance) + " -1 -1 nfs?");
     }
 
 
@@ -284,6 +179,7 @@ public class InstanceXlate
 
     return output_lines;
   }
+
 
 
   /**
@@ -340,82 +236,6 @@ public class InstanceXlate
 
     return -1;
   }
-  public static String getLastName()
-  {
-    return prefix + noslice;
-  }
-
-
-  /**
-   * Translate a line of the 'ls -l' output into a string that consists
-   * of only the major and minor device number.
-   */
-  private static long xlateLS(String line)
-  {
-    String values[] = new String[12];
-    int vals;
-
-    line = line.trim().toLowerCase();
-    StringTokenizer st = new StringTokenizer(line, " ", false);
-
-    /* Copy the first n-strings to an array: */
-    for (vals = 0; vals < values.length; vals++)
-    {
-      if (!st.hasMoreTokens())
-        break;
-      values[ vals ] = st.nextToken();
-    }
-
-    /* Is this a directory name? */
-    if (vals < 1)
-      common.failure("Invalid LS line contents: " + line);
-
-    if (line.startsWith("/"))
-      common.failure("Invalid LS line contents: " + line);
-
-    /* Look for major/minor name: */
-    if (vals < 8)
-      common.failure("Invalid LS line contents: " + line);
-
-
-    /* If no comma, then no major name: */
-    String work = values[4];
-    if (work.indexOf(",") == -1)
-      common.failure("Invalid LS line contents: " + line);
-
-    //common.ptod("test2");
-
-    /*
-    crw-------   1 root     root     200,100 Dec  6 15:36 /dev/vx/rdsk local
-    crw-------   1 root     root     200,103 Dec  6 15:34 /dev/vx/rdsk var
-    crw-------   1 root     root     200,101 Dec  6 15:33 /dev/vx/rdsk globaldev0
-    crw-------   1 root     root     200,  0 Nov  4 11:32 /dev/vx/rdsk rootvol
-    crw-------   1 root     root     200,104 Jun 12  2002 /dev/vx/rdsk oracle
-    crw-------   1 root     root     200,102 Jun  5  2002 /dev/vx/rdsk swapvol
-    crw-------   1 oracle   dba      200,29052 Dec 10 14:15 /dev/vx/rdsk/elogexdg partition1G_32
-    crw-------   1 oracle   dba      200,29054 Dec 10 14:15 /dev/vx/rdsk/elogexdg partition1G_34
-    */
-    /* If comma last byte, then major/minor not concatenated: */
-    if (work.charAt(work.length() -1) == ',')
-    {
-      if (vals < 9)
-        common.failure("Invalid LS line contents: " + line);
-
-      Integer num = Integer.valueOf(work.substring(0, work.length() -1));
-      long major  = num.intValue();
-      num         = Integer.valueOf(values[5]);
-      long minor  = num.intValue();
-      return(major << 32) + minor;
-    }
-    else
-    {
-      Integer num = Integer.valueOf(work.substring(0, work.indexOf(",") ));
-      long major   = num.intValue();
-      num         = Integer.valueOf(work.substring(work.indexOf(",") + 1 ));
-      long minor   = num.intValue();
-      return(major << 32) + minor;
-    }
-  }
 
 
   /**
@@ -459,7 +279,6 @@ public class InstanceXlate
   }
 
 
-
   public static void printAll()
   {
 
@@ -482,7 +301,36 @@ public class InstanceXlate
                   "  |  " +
                   Format.f(mask, right_lines[i]).trim());
     }
+  }
 
+  private static String[] getIostatData(String right)
+  {
+    /* If we don't reuse, just issue command: */
+    if (!common.get_debug(common.REUSE_IOSTAT))
+    {
+      OS_cmd ocmd = OS_cmd.execute(IO_STAT + right);
+      if (!ocmd.getRC())
+        return null;
+      return ocmd.getStdout();
+    }
+
+    /* We reuse. If we have a file, return: */
+    String file = ClassPath.classPath("reuse_iostat" + right + ".txt");
+    if (Fget.file_exists(file))
+      return Fget.readFileToArray(file);
+
+    /* We don't have a file. Execute command, store and return: */
+    OS_cmd ocmd = OS_cmd.execute(IO_STAT + right);
+    if (!ocmd.getRC())
+      return null;
+
+    Fput fp = new Fput(file);
+    String[] lines = ocmd.getStdout();
+    for (int i = 0; i < lines.length; i++)
+      fp.println(lines[i]);
+    fp.close();
+
+    return lines;
   }
 }
 

@@ -1,26 +1,8 @@
 package Utils;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -40,9 +22,8 @@ import javax.swing.border.*;
 public class Editor extends JFrame implements ActionListener
 
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
-
+  private final static String c =
+  "Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.";
 
   public Editor(String title)
   {
@@ -65,6 +46,14 @@ public class Editor extends JFrame implements ActionListener
 
   private static JEditorPane edit_pane = null;
   private static String edit_file = null;
+
+
+  /* Create buttons and a filler: */
+  static JButton save = new JButton("Save");
+  static JButton done = new JButton("Cancel");
+  static JButton both = new JButton("Save and exit");
+  static JLabel  fill = new JLabel();
+
 
   public static void main(String args[]) throws Exception
   {
@@ -90,14 +79,9 @@ public class Editor extends JFrame implements ActionListener
     scroll_rsh.setBorder(new TitledBorder(new EtchedBorder(EtchedBorder.RAISED,Color.white,new Color(178, 178, 178)),
                                           "Editing file " + edit_file));
 
-    /* Create buttons and a filler: */
-    JButton save = new JButton("Save");
-    JButton done = new JButton("Cancel");
-    JLabel  fill = new JLabel();
-
     /* Allocate the Frame and set it up: */
     Editor tf = new Editor("Ultra Cheap Fullscreen Editor");
-    tf.setSize(new Dimension(700,600));
+    tf.setSize(new Dimension(1000,800));
     Container cp = tf.getContentPane();
     cp.setLayout(new GridBagLayout());
 
@@ -109,13 +93,15 @@ public class Editor extends JFrame implements ActionListener
 
     save.addActionListener(tf);
     done.addActionListener(tf);
+    both.addActionListener(tf);
 
     /* Allow scrolling, and and everything to the frame: */
     scroll_rsh.getViewport().add(edit_pane, null);
-    cp.add(scroll_rsh, new GridBagConstraints(0, 0, 3, 1, 1.0, 1.0, GridBagConstraints.CENTER, GridBagConstraints.BOTH,       new Insets(0, 0, 0, 0), 0, 0));
+    cp.add(scroll_rsh, new GridBagConstraints(0, 0, 4, 1, 1.0, 1.0, GridBagConstraints.CENTER, GridBagConstraints.BOTH,       new Insets(0, 0, 0, 0), 0, 0));
     cp.add(save,       new GridBagConstraints(0, 1, 1, 1, 0.1, 0.0, GridBagConstraints.CENTER, GridBagConstraints.BOTH,       new Insets(0, 0, 0, 0), 0, 0));
     cp.add(done,       new GridBagConstraints(1, 1, 1, 1, 0.1, 0.0, GridBagConstraints.CENTER, GridBagConstraints.BOTH,       new Insets(0, 0, 0, 0), 0, 0));
-    cp.add(fill,       new GridBagConstraints(2, 1, 1, 1, 0.9, 0.0, GridBagConstraints.CENTER, GridBagConstraints.BOTH,       new Insets(0, 0, 0, 0), 0, 0));
+    cp.add(both,       new GridBagConstraints(2, 1, 1, 1, 0.1, 0.0, GridBagConstraints.CENTER, GridBagConstraints.BOTH,       new Insets(0, 0, 0, 0), 0, 0));
+    cp.add(fill,       new GridBagConstraints(3, 1, 1, 1, 0.9, 0.0, GridBagConstraints.CENTER, GridBagConstraints.BOTH,       new Insets(0, 0, 0, 0), 0, 0));
 
     Message.centerscreen(tf);
     tf.setVisible(true);
@@ -125,7 +111,7 @@ public class Editor extends JFrame implements ActionListener
   {
     String cmd = e.getActionCommand();
 
-    if (e.getActionCommand().equals("Done"))
+    if (e.getActionCommand().equals("Cancel"))
       System.exit(0);
 
     else if (e.getActionCommand().equals("Save"))
@@ -136,10 +122,19 @@ public class Editor extends JFrame implements ActionListener
       fp.close();
     }
 
-    else
+    else if (e.getSource() == both)
+    {
+      String data = edit_pane.getText().trim();
+      Fput fp = new Fput(edit_file);
+      fp.println(data);
+      fp.close();
+      System.exit(0);
+    }
+
+    else if (!e.getActionCommand().equals("Cancel"))
     {
       System.err.println("bad action: " + cmd);
-      System.exit(-1);
+      System.exit(0);
     }
   }
 }

@@ -1,54 +1,87 @@
 #!/bin/ksh
-
-
-#
-#
-# Copyright 2010 Sun Microsystems, Inc. All rights reserved.
-#
-# DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
-#
-# The contents of this file are subject to the terms of the Common
-# Development and Distribution License("CDDL") (the "License").
-# You may not use this file except in compliance with the License.
-#
-# You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
-# or ../vdbench/license.txt. See the License for the
-# specific language governing permissions and limitations under the License.
-#
-# When distributing the software, include this License Header Notice
-# in each file and include the License file at ../vdbench/licensev1.0.txt.
-#
-# If applicable, add the following below the License Header, with the
-# fields enclosed by brackets [] replaced by your own identifying information:
-# "Portions Copyrighted [year] [name of copyright owner]"
 #
 
 #
-# Author: Henk Vandenbergh.
+# I received the 7.1 system from gnanakumar.rajaram@oracle.com
 #
+# Mount: mount 10.79.9.18:/export/home1/16/hvandenb /henkv
 
 
-java=/opt/SDK/jdk
-mine=/mnt/vdbench500/Jni
+mine=/henkv/vdbench504/Jni
 
-JAVA_PATH=-I/usr/java14/include
+JAVA_PATH=/usr/java6
 
- INCLUDES=" -DAIX -I$JAVA_PATH/include -I/usr/include/ -I$JAVA_PATH/include/c++/powerpc-ibm-aix5.3.0.0 "
+PATH=/usr/vac/bin:/usr/vacpp/bin:/usr/bin:$PATH
+export PATH
+
+CC_PATH=/usr/vac/bin
+CXX_PATH=/usr/vacpp/bin
+XLF_PATH=/usr/bin
+
+
+CC="$CC_PATH/xlc -qlanglvl=extc99"
+CXX=$CXX_PATH/xlC
+FC=$XLF_PATH/xlf95
+
+
+INCLUDES=" -DAIX -I$JAVA_PATH/include -I/usr/include/ -I$JAVA_PATH/include/c++/powerpc-ibm-aix5.3.0.0 "
 
 cd /tmp
 
-gcc  ${INCLUDES} -c $mine/vdbjni.c
-gcc  ${INCLUDES} -c $mine/vdbaix.c
-gcc  ${INCLUDES} -c $mine/vdb_dv.c
-gcc  ${INCLUDES} -c $mine/vdb.c
 
-#exit
 
-echo
-echo Linking
-echo
+echo Compiling 32bit
 
-gcc  -o  /mnt/vdbench500/aix/libvdbench.so vdbjni.o vdbaix.o vdb_dv.o vdb.o  -lpthreads -shared
+$CC -q32  ${INCLUDES} -c $mine/vdbjni.c
+$CC -q32  ${INCLUDES} -c $mine/vdbaix.c
+$CC -q32  ${INCLUDES} -c $mine/vdb_dv.c
+$CC -q32  ${INCLUDES} -c $mine/vdb.c
+
+echo Linking 32bit
+
+#
+# This link is for 32-bit.
+# You may also do a 64-bit compile (find the proper compiler flags).
+# The shared library name then must be aix-64.so
+#
+
+#
+# WARNING: All compiler warnings may be ignored. They are all typecast related
+#
+
+# $CC  -o  /mnt/vdbench/aix/aix-32.so vdbjni.o vdbaix.o vdb_dv.o vdb.o  -lpthreads -shared
+rm /henkv/vdbench504/aix/aix-32.so  2>/dev/null
+$CC -q32  -o  /henkv/vdbench504/aix/aix-32.so vdbjni.o vdbaix.o vdb_dv.o vdb.o -G -lpthreads
+
+
+
+
+echo Compiling 64bit
+
+$CC -q64  ${INCLUDES} -c $mine/vdbjni.c
+$CC -q64  ${INCLUDES} -c $mine/vdbaix.c
+$CC -q64  ${INCLUDES} -c $mine/vdb_dv.c
+$CC -q64  ${INCLUDES} -c $mine/vdb.c
+
+echo Linking 64bit
+
+#
+# This link is for 32-bit.
+# You may also do a 64-bit compile (find the proper compiler flags).
+# The shared library name then must be aix-64.so
+#
+
+#
+# WARNING: All compiler warnings may be ignored. They are all typecast related
+#
+
+# $CC  -o  /mnt/vdbench/aix/aix-32.so vdbjni.o vdbaix.o vdb_dv.o vdb.o  -lpthreads -shared
+rm /henkv/vdbench504/aix/aix-64.so 2>/dev/null
+$CC -q64  -o  /henkv/vdbench504/aix/aix-64.so vdbjni.o vdbaix.o vdb_dv.o vdb.o -G -lpthreads
+
+
+
+
 
 
 

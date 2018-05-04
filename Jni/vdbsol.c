@@ -1,24 +1,7 @@
 
 
 /*
- * Copyright (c) 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
 
 
@@ -27,7 +10,7 @@
  */
 
 
-#include <jni.h>
+#include "vdbjni.h"
 #include <fcntl.h>
 #include <sys/unistd.h>
 #include <wait.h>
@@ -36,6 +19,9 @@
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
+#include <strings.h>
+#include <signal.h>
+#include <pthread.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -43,10 +29,11 @@
 #include <sys/mman.h>
 #include <sys/resource.h>  /* PRIO_PROCESS  */
 #include <sys/systeminfo.h>
-#include "vdbjni.h"
 
 
-extern int shmid = -1;
+static char c[] =
+"Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
+
 
 extern struct Shared_memory *shared_mem;
 
@@ -129,9 +116,8 @@ extern jlong file_open(JNIEnv *env, const char *filename, int open_flags, int fl
   fd = open64(filename, (access_type), 0666);
   if ( fd == -1 )
   {
-    sprintf(ptod_txt, "file_open(), open for '%s' failed: flags: %08x %s", filename,
-            open_flags, strerror(errno));
-    PTOD(ptod_txt);
+    PTOD3("file_open(), open for '%s' failed: flags: %08x %s",
+          filename, open_flags, strerror(errno));
     return -1;
   }
 
@@ -166,7 +152,14 @@ extern jlong file_close(JNIEnv *env, jlong fhandle)
  */
 extern jlong file_read(JNIEnv *env, jlong fhandle, jlong seek, jlong length, jlong buffer)
 {
-  int rc = pread64((int) fhandle, (void*) buffer, (size_t) length, (off_t) seek);
+  int rc;
+  //if (seek & 0x2)
+  //  return 0;
+
+  /* Set fixed values at start and end of buffer: */
+  prepare_read_buffer(env, buffer, length);
+
+  rc = pread64((int) fhandle, (void*) buffer, (size_t) length, (off_t) seek);
   if (rc == -1)
   {
     if (errno == 0)
@@ -179,14 +172,12 @@ extern jlong file_read(JNIEnv *env, jlong fhandle, jlong seek, jlong length, jlo
 
   else if (rc != length)
   {
-    sprintf(ptod_txt, "Invalid byte count. Expecting %lld, but read only %d bytes. ",
-            length, rc);
-    PTOD(ptod_txt);
-    PTOD("Returning ENOENT");
-    return ENOENT;
+    PTOD2("Invalid byte count. Expecting %lld, but read only %d bytes.", length, rc);
+    return 798;
   }
 
-  return 0;
+  /* Make sure read was REALLY OK: */
+  return check_read_buffer(env, buffer, length);
 }
 
 
@@ -196,7 +187,11 @@ extern jlong file_read(JNIEnv *env, jlong fhandle, jlong seek, jlong length, jlo
 /*                                                                            */
 extern jlong file_write(JNIEnv *env, jlong fhandle, jlong seek, jlong length, jlong buffer)
 {
-  int rc = pwrite64((int) fhandle, (void*) buffer, (size_t) length, (off_t) seek);
+  int rc;
+  //if (seek & 0x2)
+  //  return 0;
+
+  rc = pwrite64((int) fhandle, (void*) buffer, (size_t) length, (off_t) seek);
 
   if (rc == -1)
   {
@@ -205,21 +200,13 @@ extern jlong file_write(JNIEnv *env, jlong fhandle, jlong seek, jlong length, jl
       PTOD("Errno is zero after a failed read. Setting to 799");
       return 799;
     }
-
-    PTODS("handle: %lld", fhandle);
-    PTODS("length: %lld", length);
-    PTODS("seek:   %lld", seek);
-
     return errno;
   }
 
   else if (rc != length)
   {
-    sprintf(ptod_txt, "Invalid byte count. Expecting %lld, but wrote only %d bytes. ",
-            length, rc);
-    PTOD(ptod_txt);
-    PTOD("Returning ENOENT");
-    return ENOENT;
+    PTOD2("Invalid byte count. Expecting %lld, but wrote only %d bytes.", length, rc);
+    return 798;
   }
 
   return 0;
@@ -231,13 +218,10 @@ extern jlong file_write(JNIEnv *env, jlong fhandle, jlong seek, jlong length, jl
 /*                                                                            */
 extern jlong alloc_buffer(JNIEnv *env, int bufsize)
 {
-  void *buffer;
-
-  buffer = (void*) valloc(bufsize);
+  void *buffer = (void*) valloc(bufsize);
   if ( buffer == NULL )
   {
-    sprintf(ptod_txt, "alloc_buffer() for %d bytes failed: %d  %s\n", bufsize, errno, strerror(errno));
-    PTOD(ptod_txt);
+    PTOD3("alloc_buffer() for %d bytes failed: %d  %s\n", bufsize, errno, strerror(errno));
   }
 
   return(jlong) buffer;
@@ -259,11 +243,7 @@ extern void free_buffer(int bufsize, jlong buffer)
 /*                                                                            */
 extern jlong get_simple_tod(void)
 {
-
-  jlong tod = gethrtime();
-  tod = tod / 1000;
-
-  return tod ;
+  return gethrtime() / 1000;
 }
 
 
@@ -327,15 +307,17 @@ JNIEXPORT jint JNICALL Java_Vdb_Native_eraseFileSystemCache(JNIEnv *env,
     thismapsize = MIN(MMAP_SIZE, left);
     addr = mmap64(0, thismapsize, PROT_READ|PROT_WRITE,
                   MAP_SHARED, fhandle, size - left);
+
+    if (addr == MAP_FAILED)
+    {
+      PTOD1("mmap64 failed: handle=%lld ", fhandle);
+      PTOD1("mmap64 failed: addr=%08p ", addr);
+      PTOD1("mmap64 failed: errno=%d ", errno);
+      return -1;
+    }
+
     ret += msync(addr, thismapsize, MS_INVALIDATE);
     (void) munmap(addr, thismapsize);
-    if (ret != 0)
-    {
-      PTODS("Java_Vdb_Native_eraseFileSystemCache fhandle: %lld", fhandle);
-      PTODS("left: %lld", left);
-      PTODS("ret: %d", ret);
-      PTODS("errno: %d", errno);
-    }
   }
   return(ret);
 }
@@ -366,6 +348,112 @@ JNIEXPORT jlong JNICALL Java_Vdb_Native_directio(JNIEnv *env,
     return errno;
   }
 
+  return 0;
+}
+
+JNIEXPORT jlong JNICALL Java_Vdb_Native_getSolarisPids(JNIEnv *env,
+                                                       jclass  this)
+{
+  jlong ret;
+  ret  = ((jlong) getpid()) << 32;
+  ret |= pthread_self();
+  return ret;
+}
+
+static sema_t wait_sema;
+static JNIEnv *global_env;
+
+void handle_sig(int x)
+{
+  int rc;
+  //JNIEnv *env = global_env;
+  //PTOD("hhh");
+  //printf("here in handle_sig: %12lld\n", tod);
+
+  if ((rc = sema_post(&wait_sema)) != 0)
+  {
+    printf("sema_post failed: %d\n", rc);
+    abort();
+  }
+}
+
+/**
+ * Native sleep.
+ * This codes depends on there being only ONE caller, WT_task().
+ */
+JNIEXPORT void JNICALL Java_Vdb_Native_nativeSleep(JNIEnv *env,
+                                                   jclass  this,
+                                                   jlong   wakeup)
+{
+  static int              first = 1;
+  static timer_t          t_id;
+  static itimerspec_t     time_struct;
+  static struct sigevent  sig_struct;
+  static struct sigaction act_struct;
+  static jlong            NANO = 1000000000;
+  int                     rc   = 999;
+
+  if (first)
+  {
+    first = 0;
+
+    bzero(&sig_struct, sizeof (struct sigevent));
+    bzero(&act_struct, sizeof (struct sigaction));
+    bzero(&wait_sema,  sizeof (sema_t));
+
+    /* Create timer */
+    sig_struct.sigev_notify          = SIGEV_SIGNAL;
+    sig_struct.sigev_signo           = SIGUSR1;
+    sig_struct.sigev_value.sival_int = 0;
+    if ((rc = timer_create(CLOCK_HIGHRES, &sig_struct, &t_id)) != 0)
+    {
+      ABORT("Timer creation failed: %d", rc);
+      //return;
+    }
+
+    /* Set interrupt handler for SIGUSR1: */
+    act_struct.sa_handler = handle_sig;
+    if (sigaction(SIGUSR1, &act_struct, NULL) != 0)
+      ABORT("Could not set up signal handler: %d", rc);
+
+    sema_init(&wait_sema, 0, USYNC_THREAD, NULL);
+  }
+
+  /* Fill in new time values: */
+  time_struct.it_value.tv_sec     = wakeup / NANO;
+  time_struct.it_value.tv_nsec    = wakeup % NANO;
+  time_struct.it_interval.tv_sec  = 0;
+  time_struct.it_interval.tv_nsec = 0;
+
+  /* Arm timer */
+  if ((rc = timer_settime(t_id, TIMER_ABSTIME, &time_struct, NULL)) != 0)
+    ABORT("Setting timer failed: %d", rc);
+
+  /* Wait for semaphore from the interrupted thread. If we get */
+  /* an interrupt ourselves, that is fine also.                */
+  rc = sema_wait(&wait_sema);
+  if (rc != 0 && rc != EINTR)
+    ABORT("sema wait failed %d", rc);
+}
+
+/**
+ * Experiment creating sparse files:
+ */
+JNIEXPORT jlong JNICALL Java_Vdb_Native_truncateFile(JNIEnv *env,
+                                                     jclass  this,
+                                                     jlong   handle,
+                                                     jlong   filesize)
+{
+  jlong rc = ftruncate((int) handle, (off_t) filesize);
+  if (rc)
+  {
+    int error = errno;
+    PTOD1("ftruncate error. Handle: %lld", handle);
+    PTOD1("ftruncate error. Size:   %lld", filesize);
+    PTOD1("ftruncate error. rc:     %d", rc);
+    PTOD1("ftruncate error. errno:  %d"  , error);
+    return error;
+  }
   return 0;
 }
 

@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -36,11 +18,10 @@ import Utils.Format;
  * This class handles all FWD workload generation data.
  * FWG: File Workload Generator.
  */
-class FwgEntry extends VdbObject implements Serializable
+class FwgEntry implements Serializable, Comparable
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
-
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private String     fwg_name;
   public  String     fsd_name;
@@ -50,9 +31,15 @@ class FwgEntry extends VdbObject implements Serializable
 
   public  double[]   filesizes;
   public  double[]   xfersizes;
+
   public  boolean    select_random;
+  public  boolean    select_once;
+  public  double     poisson_skew = 0;
+
+
   public  boolean    sequential_io;
   public  boolean    del_b4_write;
+  public  boolean    file_sharing;
   public  boolean    shared;
   public  long       stopafter = Long.MAX_VALUE;
   public  double     skew;
@@ -75,9 +62,15 @@ class FwgEntry extends VdbObject implements Serializable
   private int        operation;
   public  double     readpct = -1;
 
+  public transient  FwdEntry fwd_used;  /* for debuging only */
 
   private static int sequence = 0;
   private int seqno = sequence++;
+
+  public boolean create_rw_log = false;
+
+  /* This Dedup instance is temporarily held here going from FSD to FileAnchor */
+  public Dedup dedup = null;
 
 
 
@@ -92,11 +85,15 @@ class FwgEntry extends VdbObject implements Serializable
                   String   host_in,
                   int      requested_operation)
   {
+    fwd_used       = fwd;
     fwg_name       = fwd.fwd_name;
     host_name      = host_in;
     xfersizes      = fwd.xfersizes;
     select_random  = fwd.select_random;
+    select_once    = fwd.select_once;
+    poisson_skew   = fwd.poisson_skew;
     sequential_io  = fwd.sequential_io;
+    file_sharing   = fwd.file_sharing;
     del_b4_write   = fwd.del_b4_write;
     stopafter      = fwd.stopafter;
     skew           = fwd.skew;
@@ -115,6 +112,18 @@ class FwgEntry extends VdbObject implements Serializable
     total_size     = fsd.total_size;
     operation      = requested_operation;
     open_flags     = fsd.open_flags;
+    create_rw_log  = fsd.create_rw_log;
+
+    dedup          = fsd.dedup;
+
+    //if (dedup == null)
+    //  common.failure("may not be null during first test");
+
+    if (xfersizes.length == 1 && xfersizes[0] == -1)
+      common.failure("No xfersize= specified for fwd=" + fwd.fwd_name);
+
+    if (sequential_io && readpct >= 0)
+      common.failure("'fileio=sequential' and 'rdpct=' are mutually exclusive.");
 
     /* Handle openflag overrides here: */
     if (fwd.open_flags != null)
@@ -145,13 +154,16 @@ class FwgEntry extends VdbObject implements Serializable
 
   /**
    * Get a transfer size from our distribution table.
+   *
+   * Note: the pct loop done below can be faster if I first create a 100 element
+   * array with xfersizes 0-99!
    */
   public int getXferSize()
   {
     /* Journal recovery uses the xfersize specified in the map: */
     if (Validate.isJournalRecoveryActive())
     {
-      return anchor.getDVMap().getBlockSize();
+      return anchor.getDVMap().getKeyBlockSize();
     }
 
     if (xfersizes.length == 1)
@@ -178,7 +190,7 @@ class FwgEntry extends VdbObject implements Serializable
   public int getMaxXfersize()
   {
     if (Validate.isJournalRecoveryActive())
-      return anchor.getDVMap().getBlockSize();
+      return anchor.getDVMap().getKeyBlockSize();
 
     if (xfersizes.length == 1)
       return(int) xfersizes[0];
@@ -186,6 +198,7 @@ class FwgEntry extends VdbObject implements Serializable
     double max = 0;
     for (int i = 0; i < xfersizes.length; i+=2)
       max = Math.max(max, xfersizes[i]);
+
     return(int) max;
   }
 
@@ -288,5 +301,11 @@ class FwgEntry extends VdbObject implements Serializable
     pf.add(total_size);
 
     return Format.f("fwg:%4d ", seqno) + pf.text;
+  }
+
+
+  public int compareTo(Object obj)
+  {
+    return fwg_name.compareTo( ((FwgEntry) obj).fwg_name);
   }
 }

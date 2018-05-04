@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -35,8 +17,8 @@ import Utils.Format;
  */
 public class For_loop implements Serializable, Cloneable
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private String label;                /* 'forxfersize' etc.                          */
   private double value[];              /* Array of values for each loop               */
@@ -45,6 +27,7 @@ public class For_loop implements Serializable, Cloneable
   private double forseekpct;
   private double forhitarea;
   private double forthreads;
+  public  double threads_before_override = 0;
   private double forrdpct;
   private double forrhpct;
   private double forwhpct;
@@ -60,7 +43,11 @@ public class For_loop implements Serializable, Cloneable
 
   private String display_text;  /* Valid when this has been translated into a do_list */
 
+  private static RD_entry last_rd_checked = null;
+
   private static Vector override_display;
+
+  private static boolean any_compressions = false;
 
   public  static double NOVALUE = Double.MAX_VALUE;
 
@@ -76,7 +63,6 @@ public class For_loop implements Serializable, Cloneable
 
   /**
    * Add a 'for loop' request to the request list.
-   * <pre>
    * 'for' requests will be honored in the order in which they are defined
    * in the Run Definition. Entries are stored in the request list
    * on a FIFO basis.
@@ -92,7 +78,12 @@ public class For_loop implements Serializable, Cloneable
     value = new double[list.length];
 
     if (list.length == 0)
-      common.failure("For_loop(): '" + intype + "=' " + "the list of NUMERIC values is empty. ");
+    {
+      String type2 = intype.substring(3);
+      common.failure("For_loop(): 'rd=%s,%s=' or 'rd=%s,%s=': the list of NUMERIC values is empty. ",
+                     last_rd_checked.rd_name, intype,
+                     last_rd_checked.rd_name, type2);
+    }
 
     /* If this type already exists, remove the old one: */
     for (int i = 0; i < for_list.size(); i++)
@@ -143,7 +134,50 @@ public class For_loop implements Serializable, Cloneable
 
   public double getThreads()
   {
+    //common.where(8);
     return forthreads;
+  }
+
+  /**
+   * Change shared thread count, needed to assure thread count is a multiple of
+   * the amount of slaves.
+   */
+  public void changeThreads(int threads)
+  {
+    threads_before_override = forthreads;
+    forthreads = threads;
+  }
+
+  /**
+   * We share threads only during concatenation, and only when threads have been
+   * specified as an RD parameter.
+   */
+  public int getSharedThreads()
+  {
+    if (!Validate.sdConcatenation())
+      return 0;
+    if (getThreads() == For_loop.NOVALUE)
+      return 0;
+
+    return (int) getThreads();
+  }
+  public boolean sharingThreads()
+  {
+    return (getSharedThreads() > 0);
+  }
+
+  public double getXfersize()
+  {
+    return forxfersize;
+  }
+  public double getRdPct()
+  {
+    return forrdpct;
+  }
+
+  public static boolean anyCompression()
+  {
+    return any_compressions;
   }
 
 
@@ -231,7 +265,11 @@ public class For_loop implements Serializable, Cloneable
       for (j = 0; j < fp.value.length; j++)
       {
         //common.ptod("fp.label:>>" + fp.label + "<<");
-        /**/
+        /* Compression rate influences the data pattern. The next run would */
+        /* have to clear the DV tables and I don't think that's worth it.   */
+        if (fp.label.equals("forcomp") && Validate.isValidate())
+          common.failure("The 'forcompratio=' parameter may not be used during Data Validation");
+
         if (fp.label.equals("forxfersize"))  last.forxfersize  = fp.value[j];
         else if (fp.label.equals("forseekpct"))   last.forseekpct   = fp.value[j];
         else if (fp.label.equals("forhitarea"))   last.forhitarea   = fp.value[j];
@@ -251,6 +289,10 @@ public class For_loop implements Serializable, Cloneable
 
         else
           continue;
+
+        /* I need to remember that --any-- compression is used: */
+        if (fp.label.equals("forcomp"))
+          any_compressions = true;
 
         /* Maintain a displayable and ordered list for the overrides: */
         fp.updateDisplayList(rd, fp.value[j]);
@@ -294,27 +336,42 @@ public class For_loop implements Serializable, Cloneable
     double MB = 1024 * 1024;
     double GB = 1024 * 1024 * 1024;
 
-    if (label.equals("foroperation"))
-      value_text = label + "=" + Operations.getOperationText((int) value);
+    String disp_label = label;
+
+    if (disp_label.equals("foroperation"))
+      value_text = disp_label + "=" + Operations.getOperationText((int) value);
 
     else
     {
       if (value < 0)
-        value_text = label + "=" + (int) (value * -1) + "%";
+        value_text = disp_label + "=" + (int) (value * -1) + "%";
 
-      else if (label.equals("foriorate"))
-        value_text = label + "=" + (int) value;
+      else if (disp_label.equals("foriorate"))
+      {
+        if (Vdbmain.isFwdWorkload())
+          disp_label = "forfwdrate";
 
+        if (value == RD_entry.MAX_RATE)
+          value_text = disp_label + "=max";
+        else if (value == RD_entry.CURVE_RATE)
+          value_text = disp_label + "=curve";
+        else
+          value_text = disp_label + "=" + (int) value;
+      }
       else
-        value_text = label + "=" + FileAnchor.whatSize(value);
+        value_text = disp_label + "=" + FileAnchor.whatSize(value);
     }
+
+    /* if we end with '.0', just clean it up: */
+    if (value_text.endsWith(".0"))
+      value_text = value_text.replace(".0", "");
 
     /* If the current type is in this Vector, replace it. */
     boolean replaced = false;
     for (int i = 0; i < override_display.size(); i++)
     {
       String display = (String) override_display.elementAt(i);
-      if (display.startsWith(label))
+      if (display.startsWith(disp_label))
       {
         override_display.set(i, value_text);
         replaced = true;
@@ -327,7 +384,7 @@ public class For_loop implements Serializable, Cloneable
       override_display.add(value_text);
 
 
-    for (int i = 999990; i < override_display.size(); i++)
+    for (int i = 9999990; i < override_display.size(); i++)
     {
       String display = (String) override_display.elementAt(i);
       common.ptod("display: " + i + " " + display);
@@ -392,6 +449,31 @@ public class For_loop implements Serializable, Cloneable
   /**
    * A 'forxxx' RD parameter may override certain values.
    */
+  public static void forLoopOverrideWd(RD_entry rd)
+  {
+    /* Go through all Wg entries: */
+    for (WG_entry wg : Host.getAllWorkloads())
+    {
+      For_loop.useForOverrides(wg, rd, rd.current_override, wg.sd_used, false);
+
+      /* Some checks for dedup: */
+      if (Dedup.isDedup())
+      {
+        //for (int j = 0; j < wg.xf_table.length; j+=2)
+        //  Dedup.checkXfersizes((int) wg.xf_table[j]);
+      }
+
+      /* DV and Dedup have special requirements for xfersizes, so tell them: */
+      if (!rd.rd_name.equals(Jnl_entry.RECOVERY_RUN_NAME) &&
+          !ReplayInfo.isReplay())
+        wg.sd_used.trackSdXfersizes(wg.getXfersizes());
+    }
+  }
+
+
+  /**
+   * A 'forxxx' RD parameter may override certain values.
+   */
   public static void forLoopOverrideFwd(RD_entry rd)
   {
     For_loop fp = rd.current_override;
@@ -412,7 +494,7 @@ public class For_loop implements Serializable, Cloneable
       /* Threads were already picked up at createFwgListForOneRd(): */
       //if (fp.forthreads != -1) fwg.threads     = (int)  fp.forthreads;
 
-      if (!rd.rd_name.startsWith(RD_entry.FORMAT_RUN))
+      if (!rd.rd_name.startsWith(RD_entry.FSD_FORMAT_RUN))
       {
         if (fp.foroperation  != NOVALUE) fwg.setOperation((int) fp.foroperation);
       }
@@ -451,6 +533,11 @@ public class For_loop implements Serializable, Cloneable
         FsdEntry fsd = (FsdEntry) FsdEntry.findFsd(fwg.fsd_name);
         fwg.total_size = fsd.total_size;
       }
+
+      if (fp.forcomp != NOVALUE)
+        rd.compression_ratio_to_use = fp.forcomp;
+      else
+        rd.compression_ratio_to_use = Patterns.getDefaultCompressionRatio();
     }
   }
 
@@ -463,9 +550,9 @@ public class For_loop implements Serializable, Cloneable
   {
     if (fp.forxfersize != NOVALUE)
     {
-      wg.xfersize = (int) fp.forxfersize;
-      if ( wg.xfersize % 512 != 0)
-        common.failure("data transfer size not multiple of 512 bytes: " + wg.xfersize);
+      wg.setXfersizes(new double[] { (int) fp.forxfersize });
+      if ( wg.getXfersizes()[0] % 512 != 0)
+        common.failure("data transfer size not multiple of 512 bytes: " + wg.getXfersizes()[0]);
     }
     if (fp.forrdpct != NOVALUE)
       wg.readpct = fp.forrdpct;
@@ -483,9 +570,9 @@ public class For_loop implements Serializable, Cloneable
       wg.seekpct = fp.forseekpct;
 
     if (fp.forcomp != NOVALUE)
-      rd.compression_rate_to_use = fp.forcomp;
+      rd.compression_ratio_to_use = fp.forcomp;
     else
-      rd.compression_rate_to_use = DV_map.compression_rate;
+      rd.compression_ratio_to_use = Patterns.getDefaultCompressionRatio();
 
 
     /* Set hitarea if we ask for either read or write hits: */
@@ -509,7 +596,7 @@ public class For_loop implements Serializable, Cloneable
 
     /* Is the SD ever written to? */
     if (wg.readpct != 100)
-      sd.open_for_write = true;
+      sd.setOpenForWrite();
   }
 
 
@@ -523,6 +610,8 @@ public class For_loop implements Serializable, Cloneable
    */
   public static boolean checkForLoop(RD_entry rd, Vdb_scan prm)
   {
+    last_rd_checked = rd;
+
     if /**/  ("forxfersize".startsWith(prm.keyword))
       new For_loop("forxfersize", prm.numerics, rd.for_list);
 
@@ -544,8 +633,11 @@ public class For_loop implements Serializable, Cloneable
     else if ("forhitarea".startsWith(prm.keyword))
       new For_loop("forhitarea", prm.numerics, rd.for_list);
 
-    else if ("forcompression".startsWith(prm.keyword))
+    else if ("forcompratio".startsWith(prm.keyword))
       new For_loop("forcomp", prm.numerics, rd.for_list);
+
+    else if ("forcompression".startsWith(prm.keyword))
+      new For_loop("forcomp", percentageToRatio(prm.numerics), rd.for_list);
 
     else if ("fordepth".startsWith(prm.keyword))
       new For_loop("fordepth", prm.numerics, rd.for_list);
@@ -593,8 +685,11 @@ public class For_loop implements Serializable, Cloneable
     else if ("hitarea".startsWith(prm.keyword))
       new For_loop("forhitarea", prm.numerics, rd.for_list);
 
-    else if ("compression".startsWith(prm.keyword))
+    else if ("compratio".startsWith(prm.keyword))
       new For_loop("forcomp", prm.numerics, rd.for_list);
+
+    else if ("compression".startsWith(prm.keyword))
+      new For_loop("forcomp", percentageToRatio(prm.numerics), rd.for_list);
 
     else if ("depth".startsWith(prm.keyword))
       new For_loop("fordepth", prm.numerics, rd.for_list);
@@ -611,15 +706,30 @@ public class For_loop implements Serializable, Cloneable
     else if ("totalsize".startsWith(prm.keyword))
       new For_loop("fortotalsize", prm.numerics, rd.for_list);
 
-    else if ("wss".startsWith(prm.keyword) ||
-             "workingsetsize".startsWith(prm.keyword))
+    else if ("wss".startsWith(prm.keyword) || "workingsetsize".startsWith(prm.keyword))
       new For_loop("forwss", prm.numerics, rd.for_list);
 
     else
       return false;
 
     return true;
+  }
 
+  /**
+   * Convert compression percentages to compression ratios.
+   * Round the final ratio to no more than three decimals.
+   */
+  private static double[] percentageToRatio(double[] in)
+  {
+    double[] out = new double[in.length];
+    for (int i = 0; i < in.length; i++)
+    {
+      out[i] = Double.parseDouble(String.format("%.3f", 100. / in[i]));
+      common.plog("For_loop.percentageToRatio(): converted compression=%.3f to compratio=%.3f",
+                  in[i],out[i]);
+    }
+
+    return out;
   }
 }
 

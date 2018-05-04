@@ -1,10 +1,12 @@
 package Vdb;
-
-/*
- *
- * Copyright (c) 2000-2008 Sun Microsystems, Inc. All Rights Reserved.
- *
- */
+    
+/*  
+ * Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved. 
+ */ 
+    
+/*  
+ * Author: Henk Vandenbergh. 
+ */ 
 
 import java.util.*;
 
@@ -14,8 +16,8 @@ import java.util.*;
  */
 public class WindowsPDH
 {
-  private final static String c = "Copyright (c) 2000-2008 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved.";
+  private final static String c = 
+  "Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved."; 
 
   private static String load_once = common.get_shared_lib();
 

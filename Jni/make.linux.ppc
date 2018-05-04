@@ -1,0 +1,73 @@
+#!/bin/bash
+
+#
+# Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.
+#
+
+#
+# Author: Henk Vandenbergh.
+#
+# Received from IBM   01/24/2014
+# Couldn't get 32bit to compile though. I can live with that.
+#
+
+vdb=/root/vdbench50401
+
+java=/opt/ibm/java_ppc64_70
+
+jni=$vdb/Jni
+
+echo target directory: $vdb
+
+
+#INCLUDES="-m32 -DLINUX -I$java/include -I/$java/include/linux -I/usr/include/ -fPIC"
+
+
+#cd /tmp
+#rm *.o 2>/dev/null
+
+
+#echo Compiling 32 bit
+#gcc ${INCLUDES} -c $jni/vdbjni.c
+#gcc ${INCLUDES} -c $jni/vdblinux.c
+#gcc ${INCLUDES} -c $jni/vdb_dv.c
+#gcc ${INCLUDES} -c $jni/vdb.c
+#gcc ${INCLUDES} -c $jni/chmod.c
+
+#echo Linking 32 bit
+#echo
+
+#gcc  -o   $vdb/linux/linux.so vdbjni.o vdblinux.o vdb_dv.o vdb.o  -lm -shared  -m32
+
+#chmod 777 $vdb/linux/linux.so
+
+
+
+#java=$mine/tools/some_java/linux64_jdk1.6.0_11/
+
+
+
+INCLUDES="-m64 -DLINUX -I$java/include -I/$java/include/linux -I/usr/include/ -fPIC"
+
+
+#cd /tmp
+#rm *.o 2>/dev/null
+
+
+echo Compiling 64 bit
+gcc ${INCLUDES} -c $jni/vdbjni.c
+gcc ${INCLUDES} -c $jni/vdblinux.c
+gcc ${INCLUDES} -c $jni/vdb_dv.c
+gcc ${INCLUDES} -c $jni/vdb.c
+gcc ${INCLUDES} -c $jni/chmod.c
+
+echo Linking 64 bit
+
+
+gcc  -o   $vdb/linux/ppc64.so vdbjni.o vdblinux.o vdb_dv.o vdb.o chmod.o -lm -shared -m64 -DPPC
+
+echo Files O
+
+chmod 777 $vdb/linux/ppc64.so
+
+echo PowerPC64

@@ -1,42 +1,28 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
 
+import java.io.IOException;
 import java.io.Serializable;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 import Utils.Format;
 
 /**
  * Kstat related data
  */
-public class Kstat_data extends VdbObject implements Serializable
+public class Kstat_data implements Serializable
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
-
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   /* This has been taken directly from struct kstat_io in sys-kstat.h:        */
   long nread;                /* number of bytes read                          */
@@ -174,6 +160,60 @@ public class Kstat_data extends VdbObject implements Serializable
     //txt += Format.f("rlentime: %4d ", rlentime);
 
     return txt;
+  }
+
+
+  /**
+   * Translate a raw device name to a real name IF this is a soft link.
+   */
+  public static String translateSoftLink(String rawname)
+  {
+    try
+    {
+      Path path = FileSystems.getDefault().getPath(rawname);
+
+      if (!Files.isSymbolicLink(path))
+        return rawname;
+
+      /* On Solaris we can get '/devices/', which should be left alone: */
+      String new_path = path.toRealPath().toString();
+      if (common.onSolaris() && new_path.startsWith("/devices/"))
+        return rawname;
+
+      return new_path;
+
+    }
+    catch (IOException e)
+    {
+      common.ptod("Exception trying to get soft link name for '%s'. Ignored", rawname);
+      common.ptod(e);
+      return rawname;
+    }
+
+  }
+
+  public static void main(String[] args)
+  {
+    String rawname = args[0];
+    try
+    {
+      Path path = FileSystems.getDefault().getPath(rawname);
+
+      if (!Files.isSymbolicLink(path))
+      {
+        common.ptod("Not a symbolic link");
+        return;
+      }
+
+      rawname = path.toRealPath().toString();
+      common.ptod("rawname: " + rawname);
+    }
+    catch (IOException e)
+    {
+      common.ptod("Exception trying to get soft link name for '%s'. Ignored", rawname);
+      common.ptod(e);
+      return;
+    }
   }
 }
 

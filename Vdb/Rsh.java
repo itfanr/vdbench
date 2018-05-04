@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -41,10 +23,10 @@ import Utils.Format;
  */
 public class Rsh
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.";
 
-  private SlaveSocket socket_to_remote;
+  public  SlaveSocket socket_to_remote;
   private String host;
 
 
@@ -57,8 +39,11 @@ public class Rsh
   /**
    * Connect to RshDeamon()
    */
-  private void connectToRemote()
+  public void connectToRemote()
   {
+
+    Signal signal = new Signal(60);
+
     /* Connect to the master: */
     while (true)
     {
@@ -71,16 +56,19 @@ public class Rsh
         /* Set timeout */
         socket_to_remote.getSocket().setSoTimeout(10 * 60 * 1000);
 
-        common.ptod("Successfully connected to the Vdbench rsh deamon on host " + host);
+        common.ptod("Successfully connected to the Vdbench rsh daemon on host " + host);
       }
 
       /* Not here, keep trying: */
       catch (ConnectException e)
       {
+        if (signal.go())
+          common.failure("Vdbench rsh connection failure.");
         common.ptod("");
-        common.ptod("Trying to connect to the Vdbench rsh deamon on host " + host);
-        common.ptod("The Vdbench rsh deamon must be started on each target host.");
-        common.ptod("This requires a one-time start of './vdbench rsh' on the target host");
+        common.ptod("Trying to connect to the Vdbench rsh daemon on host " + host);
+        common.ptod("The Vdbench rsh daemon must be started on each target host.");
+        common.ptod("This requires a one-time start of './vdbench rsh' on the target host.");
+        common.ptod("Trying this for %d seconds only.", signal.getDuration());
         common.sleep_some(5000);
         continue;
       }
@@ -96,7 +84,7 @@ public class Rsh
       }
 
       /* Connection made, drop out of connect loop: */
-      common.ptod("Connection to " + host + " using port " + SlaveSocket.getRemotePort() + " successful");
+      common.ptod("RSH Connection to " + host + " using port " + SlaveSocket.getRemotePort() + " successful");
       break;
 
     }
@@ -155,6 +143,47 @@ public class Rsh
     socket_to_remote.close();
   }
 
+  public void getRemoteSwatOutput()
+  {
+    String label = "swatlabel";
+
+    while (true)
+    {
+      try
+      {
+        SocketMessage sm = socket_to_remote.getMessage();
+
+        if (sm.getMessageNum() == SocketMessage.RSH_STDERR_OUTPUT)
+        {
+          String line = (String) sm.getData();
+          common.ptod(" stderr: " + line);
+        }
+
+        else if (sm.getMessageNum() == SocketMessage.RSH_STDOUT_OUTPUT)
+        {
+          String line = (String) sm.getData();
+          common.ptod(" stdout: " + line);
+        }
+
+        else if (sm.getMessageNum() == SocketMessage.RSH_COMMAND)
+        {
+          break;
+        }
+
+        else
+          common.failure("Unknown socket message: " + sm.getMessageText());
+      }
+
+      catch (Exception e)
+      {
+        common.ptod("Exception in getRemoteOutput(): " + label);
+        common.failure(e);
+      }
+    }
+
+    socket_to_remote.close();
+  }
+
 
 
   /**
@@ -181,9 +210,40 @@ public class Rsh
   }
 
   /**
-   * This is the main, started by the master to do all the work.
+   * Send a command request to a remote system.
    */
-  public static void main(String[] args) throws Exception
+  public static void main(String[] args)
+  {
+    /* Strip off the IP: */
+    String ip = args[0];
+
+    /* Concatenate the rest: */
+    String command = "";
+    for (int i = 1; i < args.length; i++)
+      command += args[i] + " ";
+
+    Rsh rsh = new Rsh(ip);
+
+    /* Connect to the master: */
+    rsh.connectToRemote();
+
+    SocketMessage sm = new SocketMessage(SocketMessage.RSH_COMMAND);
+    sm.setData(command);
+    rsh.socket_to_remote.putMessage(sm);
+
+    /* RshDeamon() will send us stdout and stderr back: */
+    rsh.getRemoteSwatOutput();
+
+    /* When we come back here the master has told us to nicely shut down */
+    /* by returning to use the RSH_COMMAND message:                      */
+    rsh.socket_to_remote.close();
+
+  }
+
+  /**
+   * This is NOT the main, started by the master to do all the work.
+   */
+  public static void mainold(String[] args) throws Exception
   {
     //String cmd = "ls -l /var/tmp";
     Rsh rsh = new Rsh("sbm-thor-a");

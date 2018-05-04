@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -43,53 +25,71 @@ import Utils.Getopt;
  */
 public class PrintBlock
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private static DateFormat df = new SimpleDateFormat( "(MM/dd/yy HH:mm:ss.SSS)" );
   private static boolean zapit = false;
   private static int     zapoffset = -1;
   private static int     zapvalue  = 0x01234567;
-  private static boolean quiet = false;
+  private static boolean quiet = true;
+  private static int dedupunit = 0;
 
   public static void print(String[] args)
   {
     /* Replace "-print" with "print" to avoid parse errors: */
     args[0] = "print";
 
-    Getopt g = new Getopt(args, "qzo:v:", 99);
+    Getopt g = new Getopt(args, "u:qzo:v:", 99);
     Vector positionals = g.get_positionals();
 
     if (positionals.size() != 4)
       if (args.length < 4)
-        common.failure("Bad print option: 'vdbench print device lba size [-q]'. "+
+        common.failure("Bad print option: 'print device lba size'. "+
                        "(lba may be prefixed with 0x if needed)");
 
-      /* Allow print to CHANGE the block: */
+      /* Need shared memory to issue PTOD() requests in JNI: */
+    Native.allocSharedMemory();
+
+    /* Allow -print to CHANGE the block: */
     zapit = g.check('z');
-    quiet = g.check('q');
-    if (g.check('o'))
+    //quiet = g.check('q');
+    if (g.check('o'))  // in hex!!
       zapoffset = Integer.parseInt(g.get_string(), 16);
     if (g.check('v'))
       zapvalue = (int) Long.parseLong(g.get_string(), 16);
+    if (g.check('u'))
+      dedupunit = g.extractInt();
 
-    /* (positional[0] contains "print") */
-    String disk       = g.get_positional(1);
-    String lba_string = g.get_positional(2);
-    long lba;
+    String disk         = g.get_positional(1);
+    String lba_string   = g.get_positional(2);
+    String print_string = g.get_positional(3);
+    long   lba;
+    int    print_size;
+
     if (lba_string.startsWith("0x"))
       lba = Long.parseLong(lba_string.substring(2), 16);
     else if (lba_string.endsWith("k"))
       lba = Long.parseLong(lba_string.substring(0, lba_string.length() - 1)) * 1024l;
     else if (lba_string.endsWith("m"))
       lba = Long.parseLong(lba_string.substring(0, lba_string.length() - 1)) * 1024l * 1024l;
+    else if (lba_string.endsWith("g"))
+      lba = Long.parseLong(lba_string.substring(0, lba_string.length() - 1)) * 1024l * 1024l * 1024l;
     else
       lba = Long.parseLong(lba_string);
+
+    /* Allow specification of non-512 aligned block by just clearing the remainder: */
+    lba &= ~511;
 
     System.out.println(String.format("Device: %s; lba: 0x%08x", disk, lba));
 
     /* Make size multiple of 512, but use original size for printing: */
-    int print_size = Integer.parseInt(g.get_positional(3));
+    if (print_string.endsWith("k"))
+      print_size = Integer.parseInt(print_string.substring(0, print_string.length() - 1)) * 1024;
+    else if (print_string.endsWith("m"))
+      print_size = Integer.parseInt(print_string.substring(0, print_string.length() - 1)) * 1024 * 1024;
+    else
+      print_size = Integer.parseInt(print_string);
     int read_size  = (print_size + 511) / 512 * 512;
 
     Vector lines = printit(disk, lba, read_size, print_size);
@@ -107,12 +107,21 @@ public class PrintBlock
     /* Allocate workarea for LFSR: */
     int[] lfsr_sector  = new int[512/4];
 
-    long handle = Native.openFile(lun);
+    OpenFlags oflags = new OpenFlags(new String[] { "directio"}, null);
+
+    long handle = Native.openFile(lun, oflags, 0);
     if (handle < 0)
       common.failure("Can't open disk file: " + lun);
 
+    File_handles.addHandle(handle, "Vdbench print " + lun);
+
     long  data_buffer = Native.allocBuffer(read_size);
     int[] data_sector = new int[read_size / 4];
+
+    //common.ptod("handle:      " + handle);
+    //common.ptod("lba:         " + lba);
+    //common.ptod("read_size:   " + read_size);
+    //common.ptod("data_buffer: " + data_buffer);
 
     long rc = Native.readFile(handle, lba, read_size, data_buffer);
     if (rc != 0)
@@ -121,9 +130,18 @@ public class PrintBlock
 
     Native.buffer_to_array(data_sector, data_buffer, read_size);
 
-    lines.add("lba         blk    sector data read" +
-              "                           " +
-              ((!quiet) ? "Notes; LFSR data valid t/f " : ""));
+    if (dedupunit == 0)
+    {
+      lines.add("lba             blk      sector data read" +
+                "                           " +
+                ((!quiet) ? "Notes; LFSR data valid t/f " : ""));
+    }
+    else
+    {
+      lines.add("lba             blk       dedup    sector data read" +
+                "                           " +
+                ((!quiet) ? "Notes; LFSR data valid t/f " : ""));
+    }
 
     int sectors = read_size / 512;
     int sector_offset = 0;
@@ -137,14 +155,14 @@ public class PrintBlock
       String wrong = "";
       int ts0 = data_sector[sector_offset + 2];
       int ts1 = data_sector[sector_offset + 3];
-      long ts = ((long) ts0 << 32) | ((long) ts1 << 32 >>> 32);
+      long ts = Jnl_entry.make64(ts0, ts1); // ((long) ts0 << 32) | ((long) ts1 << 32 >>> 32);
       todstr  = df.format( new Date(ts / 1000) );
 
 
       /* Check lba: */
-      int lba0 = data_sector[sector_offset + 0];
-      int lba1 = data_sector[sector_offset + 1];
-      long blk_lba = ((long) lba0 << 32) | (long) lba1 << 32 >>> 32;
+      int lba0     = data_sector[sector_offset + 0];
+      int lba1     = data_sector[sector_offset + 1];
+      long blk_lba = Jnl_entry.make64(lba0, lba1); //((long) lba0 << 32) | (long) lba1 << 32 >>> 32;
       if (!quiet && blk_lba != lba)
       {
         wrong = "(wrong lba) ";
@@ -157,19 +175,32 @@ public class PrintBlock
       /* Create an LFSR array using the lba just read (not requested), */
       /* and the key just read (not requested):                        */
       String name = xlateToString(data_sector[5], data_sector[6]);
-      Native.fillLFSR(lfsr_sector, blk_lba, newkey, name);
 
+      // problem here with crazy data. Was not using it anyway!
+      //Native.fillLfsrArray(lfsr_sector, blk_lba, newkey, name);
+
+      /* fillLfsr fills bytes 0-511; we need bytes 32-511 placed at offset 32: */
+      int[] p2 = new int[512/4];
+      System.arraycopy(lfsr_sector, 0, p2, 32/4, 480/4);
+      lfsr_sector = p2;
 
       /* Print one line for each 4 words (16 bytes), but end after 'print_size' bytes */
       for (int i = 0;
-            i < 512 / 4 / 4 && i < (print_size + 15) / 4 / 4;
-            sector_offset += 4, i++)
+          i < 512 / 4 / 4 && i < (print_size + 15) / 4 / 4;
+          sector_offset += 4, i++)
       {
         String line  = "";
         String match = "";
         String lfsr  = "";
-        line += Format.f("0x%08x ", lba + sector_offset*4);
-        line += Format.f("+0x%04x ",  (sector_offset*4) );
+        line += String.format("0x%012x ", lba + sector_offset*4);
+
+        line += Format.f("+0x%06x ",  (sector_offset*4) );
+
+        /* Including dedup reporting: */
+        if (dedupunit != 0)
+          line += Format.f("+0x%06x ",  (lba + sector_offset*4) % dedupunit);
+
+
         line += Format.f("0x%03x  ",  (sector_offset*4) % 512);
 
         /* Print four words per line: */
@@ -202,6 +233,25 @@ public class PrintBlock
             line += match + lfsr;
         }
 
+
+
+        if (dedupunit != 0 && (lba + sector_offset*4) % dedupunit == 0)
+        {
+          line += String.format(" dedup %08x %08x",
+                                data_sector[sector_offset + 0],
+                                data_sector[sector_offset + 1]);
+          long dlba = ((long) data_sector[sector_offset + 0] << 32) | data_sector[sector_offset + 1];
+
+
+          //line += String.format(" dlba: %016x", dlba);
+          //line += String.format(" lba:  %016x", lba + sector_offset*4);
+          /* For Vdbench, if the first 8 bytes equal the lba: this must be a unique block: */
+          if (dlba == lba + sector_offset*4)
+            line += " unique";
+          else
+            line += " duplicate";
+        }
+
         lines.add(line);
       }
 
@@ -222,7 +272,7 @@ public class PrintBlock
     lines.insertElementAt("", 0);
 
     if (!quiet)
-      lines.insertElementAt(BadBlock.compressSectorNumbers(bad_sector_numbers, sectors), 0);
+      lines.insertElementAt(DvKeyBlock.compressSectorNumbers(bad_sector_numbers, sectors), 0);
 
 
     if (!zapit)
@@ -238,10 +288,10 @@ public class PrintBlock
     {
       for (int i = 0; i < data_sector.length; i+=2)
       {
-        data_sector[i] = 0x01234567;
+        data_sector[i]   = 0x01234567;
         data_sector[i+1] = 0x89abcdef;
       }
-      lines.add("Block has now een overwritten with values 0x0123456789abcdef");
+      lines.add("Block has now been overwritten with values 0x0123456789abcdef");
     }
     else
     {
@@ -250,7 +300,7 @@ public class PrintBlock
       lines.add(String.format("Offset 0x%08x replaced with 0x%08x", zapoffset, zapvalue));
     }
 
-    Native.array_to_buffer(data_sector, data_buffer);
+    Native.arrayToBuffer(data_sector, data_buffer);
 
     rc = Native.writeFile(handle, lba, read_size, data_buffer);
     if (rc != 0)
@@ -266,6 +316,7 @@ public class PrintBlock
     StringBuffer txt = new StringBuffer(9);
     String arch = System.getProperty("os.arch");
 
+    //common.ptod("int1: %08x %08x", int1, int2);
     if (arch.equals("x86"))
     {
       txt.append((char) (int1        & 0xff));
@@ -292,7 +343,8 @@ public class PrintBlock
     //common.ptod("xlateToString: " + txt);
     for (int i = 0; i < txt.length(); i++)
     {
-      if (!Character.isDigit(txt.charAt(i)))
+      //common.ptod("txt.charAt(i): " + txt.charAt(i));
+      if (!Character.isSpace(txt.charAt(i)) && !Character.isLetterOrDigit(txt.charAt(i)))
         return "nostring";
     }
 

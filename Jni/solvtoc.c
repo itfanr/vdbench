@@ -1,33 +1,13 @@
 
-
 /*
- * Copyright (c) 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
 
-
-#include <jni.h>
+#include "vdbjni.h"
 #include <sys/types.h>
 #include <sys/dklabel.h>
 #include <sys/vtoc.h>
@@ -36,12 +16,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "vdbjni.h"
 
 #include <dlfcn.h>
 #include <link.h>
-#include <sys/efi_partition.h>
+#include <vdb_efi_partition.h>
 
+
+static char c[] =
+  "Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved.";
+
+
+
+extern struct Shared_memory *shared_mem;
 
 /**
  * Determine size of the raw disk or of the file system file
@@ -53,22 +39,19 @@ extern jlong get_vtoc(JNIEnv *env, jlong fhandle, const char* fname)
   jlong  filesize, size;
   struct stat64 xstat;
   int    slice, i;
-  char txt[256];
 
   /* Get fstat for either minor name or filesize: */
   rc = fstat64(fhandle, &xstat);
   if ( rc < 0 )
   {
-    sprintf(txt, "get_vtoc(), fstat %s failed: %s\n", fname, strerror(errno));
-    PTOD(txt);
+    PTOD2("get_vtoc(), fstat %s failed: %s\n", fname, strerror(errno));
     abort();
   }
 
   /* We don't do catalogs! */
   if ( S_ISDIR(xstat.st_mode) )
   {
-    sprintf(txt, "get_vtoc(): Requested file '%s' is a directory, not a file or a disk\n", fname);
-    PTOD(txt);
+    PTOD1("get_vtoc(): Requested file '%s' is a directory, not a file or a disk", fname);
     abort();
   }
 

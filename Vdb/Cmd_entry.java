@@ -1,81 +1,60 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
 
 import java.io.Serializable;
+import java.util.Comparator;
+
 import Utils.Format;
-import Oracle.OracleBlock;
 
 /**
  * This class contains all information needed to start and complete an i/o
  * request.
  *
- * Warning: Don't attacxh this to VdbObject. finalize() is too expensive.
  */
-public class Cmd_entry implements Serializable
+public class Cmd_entry
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
-  long     delta_tod;          /* Relative tod that io needs to start         */
-                               /* WT makes this tod to start                  */
-  public long  cmd_lba;        /* lba within SD where i/o goes                */
-  public long  cmd_xfersize;   /* Number of bytes for read/write              */
+  public long     delta_tod;   /* Relative tod that io needs to start         */
+                               /* WT makes this clock tod to start            */
+  public long     cmd_lba;     /* lba within SD where i/o goes                */
+  public long     cmd_xfersize;/* Number of bytes for read/write              */
 
-  public boolean  cmd_read_flag; /* True == read                              */
-  boolean  cmd_hit;            /* Request must be a cache hitarea hit         */
-  boolean  cmd_rand;           /* This is a random io                         */
-  boolean  dv_pre_read;        /* flag indicating write changed to rewrite    */
-  public   SD_entry sd_ptr;    /* Instance of SD used for this io             */
-
-  int      dv_key;             /* Data validation key for read or write       */
-                               /* Will be incremented after the read is       */
-                               /* completed for the rewrite.                  */
+  public SD_entry sd_ptr;      /* Instance of SD used for this io             */
+  public SD_entry concat_sd;
+  public long     concat_lba;
 
   public WG_entry cmd_wg;      /* WG_entry that is requesting this cmd        */
+  public int      jni_index;   /* Where to accumulate statistics in JNI       */
 
-  public Object   oblocks;     /* Pointer to who/what/where for oracle testing*/
+  public boolean  cmd_read_flag; /* True == read                              */
+  public boolean  cmd_hit;       /* Request must be a cache hitarea hit       */
+  public boolean  cmd_rand;      /* This is a random io                       */
 
+  public int      type_of_dv_read;   /* identifying read/pre-read/read_immed      */
 
-  static Object cmd_lock = new Object();
-  static boolean preallocated = false;
+  private static boolean preallocated = false;
 
 
   /**
    * Allocate enough space to avoid running out of memory too fast when
    * allocation Cmd_entries.
    * Used to have a preallocated pool of Cmd_entries, but using new was more efficient.
-   * Now making sure that there is 50MB worth of free space available so
+   * Now making sure that there is 128MB worth of free space available so
    * that GC does not get called too often.
    */
   public static void cmd_create_pool()
   {
-    int MB = 1024 * 1024;
-    int memory = 0;
+    int MB        = 1024 * 1024;
+    int memory    = 0;
     int WANTED_MB = 128;
     int STEP      = 16;
 
@@ -115,47 +94,53 @@ public class Cmd_entry implements Serializable
 
 
 
-  public void cmd_print(SD_entry sd, String txt)
-  {
-    synchronized(cmd_lock)
-    {
-      common.ptod(txt +
-                  //Format.f(" delta: %12d ", delta_tod) +
-                  Format.f(" lba: %12d",   cmd_lba) +
-                  Format.f(" xfer: %6d",   cmd_xfersize) +
-                  " hit: " + cmd_hit +
-                  " sd: " + sd.sd_name +
-                  " read: " + cmd_read_flag +
-                  " key: " + this.dv_key);
-    }
-  }
-
-
   /**
    * Note: for sequential the real next LBA is determined in JNI code.
    */
-  static long last_block = -1;
-  public void cmd_print_resp(SD_entry sd, String txt)
+  public void cmd_print(String txt)
   {
+    long delta = Native.get_simple_tod() - SlaveWorker.first_tod;
+    delta /= 1000000;
+    delta = delta - delta_tod / 1000000;
 
-    synchronized(cmd_lock)
-    {
-      /* Show sequentiality. Only works with threads=1 */
-      if (last_block + cmd_xfersize != cmd_lba)
-        txt += " s";
-      else
-        txt += "  ";
-      last_block = cmd_lba;
+    //common.ptod("%-16s %-5s %-5s lba: %9.1fm %10d xf=%7.1fk dlta: %12.6f %s %s conc: %6d ",
+    common.ptod("%-16s %-5s %-5s lba: 0x%08x %10d xf=%7.1fk dlta: %12.6f %s %s conc: %6d ",
+                txt,
+                cmd_read_flag ? "read" : "write",
+                cmd_rand ? "rand" : "seq",
+                cmd_lba,
+                //(double) cmd_lba / 1048576.,
+                0, //  cmd_lba,
+                //(cmd_xfersize == 0) ? 0 : (((double) cmd_lba) / cmd_xfersize),
+                (double) cmd_xfersize / 1024,
+                (double) (delta_tod ) / 1000000,
+                //(double) (delta_tod - SlaveWorker.first_tod) / 1000000,
+                sd_ptr.sd_name,
+                cmd_wg.wd_name,
+                delta); // concat_lba / 1048576);
 
-      String rw = this.cmd_read_flag ? " read  " : " write ";
-      common.ptod(txt + rw +
-                  Format.f(" rand: %5s",    "" + cmd_rand) +
-                  //Format.f(" lba: %10.2f *8",     (double) cmd_lba / 8192.) +
-                  Format.f(" lba: %12d",     cmd_lba) +
-                  Format.f(" xfer: %6d",     cmd_xfersize) +
-                  Format.f(" dlta: %10.4f",  (double) (delta_tod - SlaveWorker.first_tod) / 1000000) +
-                  " " + sd.sd_name + " key: " + dv_key);
-    }
+    //common.ptod("%-16s %5s %5s block: %8.1f xf=%7d dlta: %12.6f %s %s",
+    //            txt,
+    //            cmd_read_flag ? "read" : "write",
+    //            cmd_rand ? "rand" : "seq",
+    //            (cmd_xfersize == 0) ? 0 : (((double) cmd_lba) / cmd_xfersize),
+    //            cmd_xfersize,
+    //            (double) (delta_tod - SlaveWorker.first_tod) / 1000000,
+    //            sd.sd_name,
+    //            cmd_wg.wd_name);
+  }
+
+
+  public void cmd_print2(SD_entry sd, String txt)
+  {
+    String rw = this.cmd_read_flag ? " read  " : " write ";
+
+    long xfer = (cmd_xfersize == 0) ? 0 : (cmd_lba / cmd_xfersize);
+    long now  = Native.get_simple_tod();
+    common.ptod("%-16s %s rand: %5b block: %6d xfer: %6d dlta: %10.4f %s late: %6d %.6f %.6f " + Thread.currentThread(),
+                txt, rw, cmd_rand, xfer, cmd_xfersize,
+                (double) (delta_tod - SlaveWorker.first_tod) / 1000000,
+                sd.sd_name, (now - delta_tod), delta_tod / 1000000., now / 1000000.);
   }
 
 
@@ -168,5 +153,26 @@ public class Cmd_entry implements Serializable
     Format.f(" %10.3fg", (double) cmd_lba / GB);
   }
 }
+
+
+class DeltaCompare implements Comparator
+{
+  public int compare(Object o1, Object o2)
+  {
+    Cmd_entry cmd1 = (Cmd_entry) o1;
+    Cmd_entry cmd2 = (Cmd_entry) o2;
+
+    long rc = cmd1.delta_tod - cmd2.delta_tod;
+    if (rc == 0)
+      return 0;
+    if (rc < 0)
+      return -1;
+    else
+      return +1;
+  }
+}
+
+
+
 
 

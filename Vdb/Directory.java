@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -38,41 +20,44 @@ import java.io.*;
  *
  * Directory names are reconstructed using depth and width information.
  */
-class Directory extends VdbObject implements Serializable, Comparable
+class Directory implements Serializable, Comparable
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.";
 
   private   FileAnchor  anchor;
   private   Directory   parent   = null; /* Either Directory() or FileAnchor */
   private   Directory[] children = null;
-  private   int         width    = 0;
+
+  private   int         width    = 0;      // could be char, but is 32767 big enough?
   private   int         depth    = 0;
-  protected boolean     dir_exists = false;
-  private   boolean     dir_busy = false;
-  public    FwgThread   busy_owner;
-  protected File        dir_ptr  = null;
-  private   String      full_directory_name = null;
   protected int         files_in_dir = 0;
 
+  private   boolean     dir_busy       = false;
+  private   boolean     dir_exists     = false;
   private   boolean     files_checked  = false;
+  private   boolean     this_is_anchor = false;
 
-  private static int    max_depth = 0;
-  private static int    max_width = 0;
-  private static int    max_files = 0;
-  private static int    count     = 0;
+
+
+  // Debugging fields. Search through code to find uses.
+  //public    String       last_busy = null;
+  //public    FwgThread   busy_owner;
+
 
 
   /* List of directory names, only used during initial creation */
   /* of all Directory instance for a specific FileAnchor()      */
-  private static Vector dir_list  = null;
+  private static Vector <Directory> temp_dir_list  = null;
 
   private static boolean debug  = common.get_debug(common.DIRECTORY_SET_BUSY);
   private static boolean debugc = common.get_debug(common.DIRECTORY_CREATED);
 
+  public String debugging = null;
 
   public Directory()
   {
+    this_is_anchor = true;
   }
 
   /**
@@ -81,16 +66,14 @@ class Directory extends VdbObject implements Serializable, Comparable
    * anchor directory.
    */
   public Directory(Directory parent,  int current_width,
-                   int current_depth, FileAnchor anchor)
+                   int current_depth, FileAnchor anchor, int max_width, int max_depth)
   {
     this.anchor  = anchor;
     this.parent  = parent;
     this.width   = current_width;
     this.depth   = current_depth;
-    this.full_directory_name = buildFullName();
-    this.dir_ptr = new File(this.full_directory_name);
 
-    dir_list.add(this);
+    temp_dir_list.add(this);
     //common.ptod("added dir.getFullName(): " + getFullName() + " parent exists: " + parent.exist());
     //common.ptod("creating fptr(): " + getFullName() + " " + exists + " parent: " + parent.exist());
 
@@ -98,20 +81,21 @@ class Directory extends VdbObject implements Serializable, Comparable
     {
       children = new Directory[max_width];
       for (int w = 0; w < max_width; w++)
-        children[w] = new Directory(this, w, depth + 1, anchor);
+        children[w] = new Directory(this, w, depth + 1, anchor, max_width, max_depth);
 
-      //common.ptod("xx: " + this + " " + getFullName());
+      //common.ptod("xx: " + getFullName());
     }
     else
     {
       children = null;
-      if (dir_list.size() % 10000 == 0)
-        common.ptod("Initializing directory structure: " + dir_list.size());
+      if (temp_dir_list.size() % 1000000 == 0)
+        common.ptod("Initializing directory structure for %s: %,d",
+                    anchor.getAnchorName(), temp_dir_list.size());
 
-      for (int i = 99999990; i < dir_list.size(); i++)
+      for (int i = 99999990; i < temp_dir_list.size(); i++)
       {
-        Directory dir = (Directory) dir_list.elementAt(i);
-        //common.ptod("xxdir: " + dir.getFullName());
+        Directory dir = (Directory) temp_dir_list.elementAt(i);
+        common.ptod("yy: " + dir.getFullName());
         if (dir.getFullName().equals(this.getFullName()))
           common.ptod("no: " + this.getFullName());
       }
@@ -119,6 +103,10 @@ class Directory extends VdbObject implements Serializable, Comparable
   }
 
 
+  private File getDirPtr()
+  {
+    return new File(buildFullName());
+  }
 
   /**
    * Does directory have any files?
@@ -138,7 +126,7 @@ class Directory extends VdbObject implements Serializable, Comparable
         common.failure("Recursive call to hasFile(): " + getFullName() + " " + fname);
       files_checked    = true;
       last_checked_dir = this;
-      String[] list = dir_ptr.list();
+      String[] list = getDirPtr().list();
       last_map      = new HashMap(list.length * 2);
       //common.ptod("list.length: " + list.length + " " + getFullName() + " " + fname);
       for (int i = 0; i < list.length; i++)
@@ -163,9 +151,15 @@ class Directory extends VdbObject implements Serializable, Comparable
   {
     return depth;
   }
+  public int getWidth()
+  {
+    return width;
+  }
 
   public boolean exist()
   {
+    //common.ptod("exists:    " + dir_exists + " " + getFullName());
+    //common.where(8);
     return dir_exists;
   }
   public void setExists(boolean bool)
@@ -205,8 +199,19 @@ class Directory extends VdbObject implements Serializable, Comparable
     /* since it can never go away. So we just fake it:             */
     // Wrong: this will allow multiple threads to create all children
     // of ???
-    if (full_directory_name == null)
+    if (this_is_anchor)
       return true;
+
+    /* Debugging code, to track who last locked this Directory: */
+    //if (debugc && bool && !dir_busy)
+    //  last_busy = common.get_stacktrace();
+
+    //if (getFullName().contains("vdb.4_1.dir"))
+    //{
+    //  common.ptod("vdb.4_1.dir: " + getFullName() + " " + dir_busy + " ===> " + bool);
+    //  common.where(4);
+    //}
+
 
     if (debug)
       common.ptod("Directory.setBusy: " + getFullName() + " " + dir_busy + " ===> " + bool);
@@ -227,14 +232,18 @@ class Directory extends VdbObject implements Serializable, Comparable
     if (!bool)
       this.notifyAll();
 
-    if (bool)
-      busy_owner = (FwgThread) Thread.currentThread();
-    else
-      busy_owner = null;
+    //if (bool)
+    //  busy_owner = (FwgThread) Thread.currentThread();
+    //else
+    //  busy_owner = null;
 
     return true;
   }
   public synchronized boolean isBusy()
+  {
+    return dir_busy;
+  }
+  public boolean isBusyNoSync()
   {
     return dir_busy;
   }
@@ -244,20 +253,18 @@ class Directory extends VdbObject implements Serializable, Comparable
    * here in this class is static, we must make sure that the list gets cleared
    * and picked up between new FileAnchor() instances.
    */
-  public static void clearDirectoryList(int width, int depth)
+  public static void clearStaticDirectoryList()
   {
-    max_width = width;
-    max_depth = depth;
-    dir_list = new Vector(1024, 0);
+    temp_dir_list = new Vector(1024, 0);
     //common.ptod("Clearing directory structure");
   }
 
   /**
    * Return a list of directory names.
    */
-  public static Vector getDirectoryList()
+  public static Vector <Directory> getTempDirectoryList()
   {
-    return dir_list;
+    return temp_dir_list;
   }
 
 
@@ -281,16 +288,10 @@ class Directory extends VdbObject implements Serializable, Comparable
   private static int once = 0;
   public String getFullName()
   {
-    return full_directory_name;
+    return buildFullName();
   }
   public String buildFullName()
   {
-    //if (once++ == 0)
-    //{
-    //  common.ptod("getFullname(): make sure we don't have to always regenerate it");
-    //  common.ptod("We should have an index into file_list?");
-    //}
-
     String name = "";
     Directory dir = this;
     while (true)
@@ -329,7 +330,9 @@ class Directory extends VdbObject implements Serializable, Comparable
 
   public String getDirName()
   {
-    return "vdb" + depth + "_" + (width + 1) + ".dir";
+    String name = String.format("vdb.%d_%d.dir", depth, width+1);
+
+    return name;
   }
 
 
@@ -364,27 +367,57 @@ class Directory extends VdbObject implements Serializable, Comparable
   {
     //common.ptod("createDir1: " + getFullName() + " " + ((FwgThread) Thread.currentThread()).tn.task_number);
 
+    File      dir_ptr = getDirPtr();
+    FwgThread fwt     = ((FwgThread) Thread.currentThread());
+
     if (dir_exists)
       common.failure("Creating directory that already exists: " +
                      dir_ptr.exists() + " " + getFullName() + " " +
                      ((FwgThread) Thread.currentThread()).tn.task_number);
 
+    /* For shared, before we even try to create directory, see if someone else did: */
+    if (fwt.fwg.shared && dir_ptr.exists())
+    {
+      setExists(true);
+      getAnchor().countExistingDirectories(+1);
+      fwt.fwg.blocked.count(Blocked.DIR_CREATE_SHARED);
+      return false;
+    }
+
+    /* Now create the directory: */
     long start = Native.get_simple_tod();
     if (!dir_ptr.mkdir())
     {
-      /* If we failed when using a shared FSD, this may be OK: */
-      FwgThread fwt = ((FwgThread) Thread.currentThread());
-      if (fwt.fwg.shared && dir_ptr.exists())
+      /* If we failed when using a shared FSD, this may be OK.          */
+      /* On Linux it appears that though the directory has already been */
+      /* created by a different host and this mkdir therefore fails,    */
+      /* the current OS still does not know that the directory exists,  */
+      /* with the exists() below then failing.                          */
+      /* First give this system a bit of time to sync up:               */
+      if (fwt.fwg.shared)
       {
-        setExists(true);
-        getAnchor().countExistingDirectories(+1);
-        fwt.fwg.blocked.count(Blocked.DIR_CREATE_SHARED);
-        return false;
+        Signal signal = new Signal(5);
+        while (!dir_ptr.exists())
+        {
+          common.sleep_some(10);
+          fwt.fwg.blocked.count(Blocked.DIR_WAIT_SHARED);
+          if (signal.go())
+            break;
+        }
+
+        if (dir_ptr.exists())
+        {
+          setExists(true);
+          getAnchor().countExistingDirectories(+1);
+          fwt.fwg.blocked.count(Blocked.DIR_CREATE_SHARED);
+          return false;
+        }
       }
 
       common.ptod("dir.dir_exists:   " + dir_exists);
       common.ptod("dir_ptr.exists(): " + dir_ptr.exists());
       common.ptod("file.exists():    " + new File(getFullName()).exists());
+      Blocked.printCountersToLog();
       common.failure("Unable to create directory: " + getFullName());
     }
     FwdStats.count(Operations.MKDIR, start);
@@ -392,8 +425,8 @@ class Directory extends VdbObject implements Serializable, Comparable
     setExists(true);
     //common.ptod("createDir2: " + getFullName() + " " + ((FwgThread) Thread.currentThread()).tn.task_number);
 
-    if (debugc)
-      common.ptod("Created directory: " + getFullName());
+    //if (debugc)
+    //  common.ptod("Created directory: " + getFullName());
 
     getAnchor().countExistingDirectories(+1);
     return true;
@@ -410,10 +443,10 @@ class Directory extends VdbObject implements Serializable, Comparable
       common.failure("Deleting directory that is not empty");
 
     long start = Native.get_simple_tod();
-    if (!dir_ptr.delete())
+    if (!getDirPtr().delete())
     {
       common.ptod("dir.exists:       " + dir_exists);
-      common.ptod("dir_ptr.exists(): " + dir_ptr.exists());
+      common.ptod("dir_ptr.exists(): " + getDirPtr().exists());
       common.ptod("file.exists():    " + new File(getFullName()).exists());
       common.ptod("anyExistingChildren: " + anyExistingChildren());
       common.failure("Unable to delete directory: " + getFullName());
@@ -423,8 +456,8 @@ class Directory extends VdbObject implements Serializable, Comparable
 
     setExists(false);
 
-    if (debugc)
-      common.ptod("Created directory: " + getFullName());
+    //if (debugc)
+    //  common.ptod("Deleted directory: " + getFullName());
 
     getAnchor().countExistingDirectories(-1);
   }
@@ -438,7 +471,7 @@ class Directory extends VdbObject implements Serializable, Comparable
     Directory dir = (Directory) obj;
 
     if (depth != dir.depth)
-      return (depth - dir.depth);
+      return(depth - dir.depth);
     return width - dir.width;
   }
 
@@ -456,28 +489,11 @@ class Directory extends VdbObject implements Serializable, Comparable
 
       /* If the parent does not exist then the child's not there either: */
       /* This saves time looking for directories that don't exist: */
-      if (dir.parent.exist())
+      if (dir.getAnchor().format_complete_used || dir.parent.exist())
       {
         /* Can we avoid reading the directory? */
         if (dir.anchor.getControlFile().hasDirStatus())
         {
-          /* this is a double check, which won't work with fake_file_io
-          if (dir.anchor.getControlFile().getDirStatus(i))
-          {
-            {
-              common.ptod("full_directory_name: " + dir.full_directory_name + " " + i);
-              common.failure("contradiction");
-            }
-          }
-          else
-          {
-            if (dir.dir_ptr.exists())
-            {
-              common.ptod("full_directory_name: " + dir.full_directory_name + " " + i);
-              common.failure("contradiction");
-            }
-          } */
-
           if (dir.anchor.getControlFile().getDirStatus(i))
           {
             dir.setExists(true);
@@ -486,18 +502,13 @@ class Directory extends VdbObject implements Serializable, Comparable
         }
         else
         {
-          //common.ptod("exists? " + full_directory_name);
-          if (dir.dir_ptr.exists())
+          if (dir.getAnchor().format_complete_used || dir.getDirPtr().exists())
           {
             dir.setExists(true);
             dir.getAnchor().countExistingDirectories(+1);
           }
         }
       }
-      //else
-      //  common.ptod(" no parent full_directory_name: " + dir.full_directory_name);
-
-
     }
   }
 }

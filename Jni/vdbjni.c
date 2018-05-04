@@ -1,24 +1,7 @@
 
 
 /*
- * Copyright (c) 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
 
 
@@ -27,43 +10,89 @@
  */
 
 
-#include <jni.h>
-#include <fcntl.h>
+#include "vdbjni.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <signal.h>
 
-#ifndef _WINDOWS
+#ifndef _WIN32
   #include <unistd.h>
   #ifndef LINUX
-  #include <stropts.h>
-#endif
+    #ifndef __APPLE__
+      #include <stropts.h>
+    #endif
+  #endif
 #endif
 #include <time.h>
-#include "vdbjni.h"
 
+static char c[] =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
-/* Array offsets to pick up data from Java.                     */
-/* This MUST stay in sync with the same offsets in IO_task.java */
-#define CMD_READ_FLAG  0
-#define CMD_RAND       1
-#define CMD_HIT        2
-#define CMD_LBA        3
-#define CMD_XFERSIZE   4
-#define DV_KEY         5
-#define CMD_FHANDLE    6
-#define CMD_BUFFER     7
-#define WG_NUM         8
-#define CMD_FAST_LONGS 9
-
-/* Definiton of shmid to be used by vdbsol.c */
-int shmid;
 
 struct Shared_memory *shared_mem = NULL;
 
-static int negative_response_count = 0;
+
+
+
+#ifdef SOLARIS
+  #include <sys/scsi/impl/uscsi.h>
+
+jlong scsi_reset(jlong fhandle, jlong buffer)
+{
+  static struct uscsi_cmd cmd;
+
+  if (buffer == -1 )
+    cmd.uscsi_flags = USCSI_WRITE | USCSI_RESET;
+  else
+    cmd.uscsi_flags = USCSI_WRITE | USCSI_RESET_ALL;
+
+  if (ioctl((int) fhandle, USCSICMD, &cmd) < 0 )
+  {
+    fprintf( stderr, "Reset error: %s\n", strerror(errno) );
+    return -1;
+  }
+  return 0;
+}
+#endif
+
+
+
+void printRequest(JNIEnv *env, struct Request *req)
+{
+#ifdef _WIN32
+  PTOD1("fhandle            : %I64x ", req->fhandle             );
+  PTOD1("data_flag          : %04x  ", req->data_flag           );
+  PTOD1("buffer             : %I64x ", req->buffer              );
+  PTOD1("pattern_lba        : %I64x ", req->pattern_lba         );
+  PTOD1("file_start_lba     : %I64x ", req->file_start_lba      );
+  PTOD1("sector_lba         : %I64x ", req->sector_lba          );
+  PTOD1("compression        : %I64x ", req->compression         );
+  PTOD1("dedup_set          : %I64x ", req->dedup_set           );
+  PTOD1("offset_in_key_block: %I64x ", req->offset_in_key_block );
+  PTOD1("sectors            : %x    ", req->sectors             );
+  PTOD1("key                : %x    ", req->key                 );
+  PTOD1("data_blksize       : %d    ", req->data_length         );
+  PTOD1("jni_index          : %x    ", req->jni_index           );
+  //PTOD1("dv_text        : %s   ", req->dv_text        );
+#else
+  PTOD1("fhandle            : %llx ", req->fhandle             );
+  PTOD1("data_flag          : %04x ", req->data_flag           );
+  PTOD1("buffer             : %llx ", req->buffer              );
+  PTOD1("pattern_lba        : %llx ", req->pattern_lba         );
+  PTOD1("file_start_lba     : %llx ", req->file_start_lba      );
+  PTOD1("sector_lba         : %llx ", req->sector_lba          );
+  PTOD1("compression        : %llx ", req->compression         );
+  PTOD1("dedup_set          : %llx ", req->dedup_set           );
+  PTOD1("offset_in_key_block: %llx ", req->offset_in_key_block );
+  PTOD1("sectors            : %x   ", req->sectors             );
+  PTOD1("key                : %x   ", req->key                 );
+  PTOD1("data_blksize       : %d   ", req->data_length         );
+  PTOD1("jni_index          : %x   ", req->jni_index           );
+  //PTOD1("dv_text        : %s   ", req->dv_text        );
+#endif
+}
+
 
 
 /**
@@ -128,535 +157,88 @@ JNIEXPORT jlong JNICALL Java_Vdb_Native_openfile(JNIEnv *env,
 
 
 /**
- * Java call to read data; only used for Journal
+ * Java call to read data.
  */
 JNIEXPORT jlong JNICALL Java_Vdb_Native_read(JNIEnv *env,
                                              jobject this,
                                              jlong   fhandle,
                                              jlong   seek,
                                              jlong   length,
-                                             jlong   buffer)
+                                             jlong   buffer,
+                                             jint    jni_index)
 {
-  jlong rc;
+  struct Workload *wkl = (jni_index < 0) ? 0 : &shared_mem->workload[jni_index];
+  jlong tod1, rc;
 
-  if ( (rc = file_read(env, fhandle, seek, length, buffer)) != 0 )
-    return rc;
+  /* Seed buffer in case read just fails! */
+  tod1 = START_WORKLOAD_STATS(env, wkl);
+  if ((rc = file_read(env, fhandle, seek, length, buffer)) != 0 )
+    report_io_error(env, 1, fhandle, seek, length, rc, buffer);
+  UPDATE_WORKLOAD_STATS(env, wkl, 1, (jint) length, tod1, rc);
 
   return rc;
 }
 
 
 /**
- * Java call to write data. Is only used for Journal and SCSI reset!
+ * Java call to write data.
  */
 JNIEXPORT jlong JNICALL Java_Vdb_Native_write(JNIEnv *env,
                                               jobject this,
                                               jlong   fhandle,
                                               jlong   seek,
                                               jlong   length,
-                                              jlong   buffer)
+                                              jlong   buffer,
+                                              jint    jni_index)
 {
-  jlong rc;
+  struct Workload *wkl = (jni_index < 0) ? 0 : &shared_mem->workload[jni_index];
+  jlong tod1, rc;
 
 #ifdef SOLARIS
-#include <sys/scsi/impl/uscsi.h>
-
-  if ( buffer < 0 )
-  {
-    static struct uscsi_cmd cmd;
-
-    if ( buffer == -1 )
-      cmd.uscsi_flags = USCSI_WRITE | USCSI_RESET;
-    else
-      cmd.uscsi_flags = USCSI_WRITE | USCSI_RESET_ALL;
-
-    if ( ioctl((int) fhandle, USCSICMD, &cmd) < 0 )
-    {
-      fprintf( stderr, "Reset error: %s\n", strerror(errno) );
-      return -1;
-    }
-    return 0;
-  }
+  if (buffer < 0 )
+    return scsi_reset(fhandle, buffer);
 #endif
 
-  if ( (rc = file_write(env, fhandle, seek, length, buffer)) != 0 )
-    return rc;
+  tod1 = START_WORKLOAD_STATS(env, wkl);
+  if ((rc = file_write(env, fhandle, seek, length, buffer)) != 0 )
+    report_io_error(env, 0, fhandle, seek, length, rc, buffer);
+  UPDATE_WORKLOAD_STATS(env, wkl, 0, (jint) length, tod1, rc);
 
   return rc;
 }
 
 
-
-
-static void lower_seq_eofs(JNIEnv *env)
-{
-  jclass clx;
-  jmethodID lower;
-
-  CHECK(1);
-  clx = (*env)->FindClass(env, "Vdb/WG_entry");
-  CHECK(2);
-  lower = (*env)->GetStaticMethodID(env, clx, "sequentials_lower", "()V");
-  CHECK(3);
-
-  (*env)->CallStaticVoidMethod(env, clx, lower);
-}
-
-
 /**
- * Java call to issue one or more i/o's
+ * Blocks written this way will have each 4k of the buffer overlaid with the
+ * last 32bits of the current TOD in microseconds, and with the lba.
+ * This then prevents the data from accidentally (or purposely) benefitting from
+ * possible undocumented Dedup.
+ * First 8 bytes in each 4k:
+ * bits  0-23: relative 4k piece , xor'ed with the file handle
+ * bits 24-63: last 32bits of get_simple_tod()
+ *
  */
-JNIEXPORT void JNICALL Java_Vdb_Native_multi_1io(JNIEnv *env,
-                                                 jclass this,
-                                                 jlongArray cmd_fast_java,
-                                                 jint   burst)
+JNIEXPORT jlong JNICALL Java_Vdb_Native_noDedupWrite(JNIEnv *env,
+                                                     jobject this,
+                                                     jlong   fhandle,
+                                                     jlong   seek,
+                                                     jlong   length,
+                                                     jlong   buffer,
+                                                     jint    jni_index)
 {
+  int i;
+  long rc = 0;
+  struct Workload *wkl = (jni_index < 0) ? 0 : &shared_mem->workload[jni_index];
+  jlong tod1;
 
-  jsize              i;
-  int                offset, xfersize, key;
-  int                wg_num, doseek, hit, read_flag;
-  jlong              rc, buffer, fhandle, lba;
-  jlong             *cmd_fast;
-  jboolean           iscopy;
-  struct Workload   *wkl;
-  struct Seek_range *seek_range;
-  jlong              tod1, elapsed, square;
+  prevent_dedup(env, fhandle, seek, buffer, (jint) length);
 
-  /* Load the array of longs: */
-  cmd_fast = (*env)->GetLongArrayElements(env, cmd_fast_java, &iscopy);
+  tod1 = START_WORKLOAD_STATS(env, wkl);
+  if ((rc = file_write(env, fhandle, seek, length, buffer)) != 0)
+    report_io_error(env, 0, fhandle, seek, length, rc, buffer);
+  UPDATE_WORKLOAD_STATS(env, wkl, 0, (jint) length, tod1, rc);
 
-  for ( i = 0; i < burst; i++ )
-  {
-    /* Get all of the data that we always need: */
-    offset    = CMD_FAST_LONGS * (int) i;
-    buffer    = cmd_fast[ offset + CMD_BUFFER    ];
-    fhandle   = cmd_fast[ offset + CMD_FHANDLE   ];
-    lba       = cmd_fast[ offset + CMD_LBA       ];
-    wg_num    = (int) cmd_fast[ offset + WG_NUM        ];
-    doseek    = (int) cmd_fast[ offset + CMD_RAND      ];
-    xfersize  = (int) cmd_fast[ offset + CMD_XFERSIZE  ];
-    hit       = (int) cmd_fast[ offset + CMD_HIT       ];
-    key       = (int) cmd_fast[ offset + DV_KEY        ];
-    read_flag = (int) cmd_fast[ offset + CMD_READ_FLAG ];
-
-
-    /* Get the context info and synchronize: */
-    wkl       = &shared_mem->workload[wg_num];
-    seek_range = &wkl->miss;
-    if ( hit )
-      seek_range = &wkl->hits;
-
-
-    /* Calculate next seek address and roll over if needed: */
-    MUTEX_LOCK(wkl->seek_lock);
-
-    /* Already sequential eof for this workload? */
-    if ( wkl->seq_done )
-    {
-      MUTEX_UNLOCK(wkl->seek_lock);
-      continue;
-    }
-
-
-    /* Get CURRENT seq lba and calculate lba for the NEXT i/o: */
-    if ( doseek != 1 )
-      lba = seek_range->next_lba;
-    seek_range->next_lba = lba + xfersize;
-    if ( seek_range->next_lba >= seek_range->seek_high )
-    {
-      if ( doseek == 2 )
-      {
-        wkl->seq_done = 1;
-        lower_seq_eofs(env);
-        //MUTEX_UNLOCK(wkl->seek_lock);
-      }
-      seek_range->next_lba = seek_range->seek_low;
-    }
-    MUTEX_UNLOCK(wkl->seek_lock);
-
-
-    tod1 = get_simple_tod();
-
-    /* Allow debugging by forcing an io error: */
-    if (lba & 1 != 0)
-      rc = 60002;
-    else
-    {
-      if ( read_flag )
-      {
-        *(uint*) buffer = 0xffffffff;  // seed buffer in case read just fails!
-        rc = file_read(env, fhandle, lba, xfersize, buffer);
-      }
-      else
-      {
-        // Check removed because of undocumented '-erase' parameter
-        //if ( lba == 0 )
-        //{
-        //  PTOD("Trying to write to lba 0 ");
-        //  ABORT("Trying to write to lba 0", wkl->lun);
-        //}
-
-        /* Move the requested key value: */
-        if ( key != 0 )
-          fill_buffer(env, buffer, lba, key, xfersize, wkl->sdname);
-
-        rc = file_write(env, fhandle, lba, xfersize, buffer);
-      }
-    }
-
-
-    /* Update statistics: */
-    elapsed = get_simple_tod() - tod1;
-    square  = elapsed * elapsed;
-    MUTEX_LOCK(wkl->stat_lock);
-
-    if ( read_flag )
-      wkl->rbytes += xfersize;
-    else
-      wkl->wbytes += xfersize;
-
-    wkl->resptime  += elapsed;
-    wkl->resptime2 += square;
-    if ( wkl->respmax < elapsed ) wkl->respmax = elapsed;
-    if ( read_flag )
-    {
-      wkl->reads++;
-      if ( rc != 0 )
-        wkl->read_errors++;
-    }
-    else
-    {
-      wkl->writes++;
-      if ( rc != 0 )
-        wkl->write_errors++;
-    }
-    MUTEX_UNLOCK(wkl->stat_lock);
-
-    if ( rc != 0 )
-    {
-      MUTEX_LOCK(wkl->stat_lock);
-      /*
-  void report_bad_block(JNIEnv *env, jlong read_flag, jlong fhandle,
-                        jlong   lba, jlong xfersize,  jlong error)*/
-      report_bad_block(env, read_flag, fhandle, lba, (jlong) xfersize, rc);
-      MUTEX_UNLOCK(wkl->stat_lock);
-    }
-    else
-    {
-      if ( key != 0 && read_flag)
-      {
-        /*
-extern int validate_whole_buffer(JNIEnv *env,
-                                 jlong  handle,
-                                 jlong  buffer,
-                                 jlong  file_start_lba,
-                                 jlong  file_lba,
-                                 jint   key,
-                                 jint   xfersize,
-                                 char*  name_in)
-        */
-        if (validate_whole_buffer(env, fhandle, buffer, 0, lba, key, xfersize, wkl->sdname) > 0)
-          report_bad_block(env, read_flag, fhandle, lba, (jlong) xfersize, 60003);
-      }
-    }
-
-    if (elapsed < 0)
-    {
-      if (negative_response_count == 0)
-      {
-        PTOD("Negative response time. Usually caused by out of sync cpu timers.");
-        PTOD("Will reported a maximum of 100 times after which Vdbench will continue.");
-      }
-      if (negative_response_count++ < 100)
-      {
-
-#ifdef _WINDOWS
-        sprintf(ptod_txt, "Response time (microseconds): %I64d", elapsed);
-#else
-        sprintf(ptod_txt, "Response time (microseconds): %lldd", elapsed);
-#endif
-        PTOD(ptod_txt);
-      }
-    }
-  }
-
-
-  (*env)->ReleaseLongArrayElements(env, cmd_fast_java, cmd_fast, JNI_ABORT);
-
+  return rc;
 }
-
-
-
-/**
- * Signal routine for shared memory cleanup
- */
-void jni_cleanup(int signal)
-{
-#ifdef SOLARIS
-
-  /* note: do not code things like 'SIGBUS'. Windows won't like it: */
-  if ( signal == 10 )
-    printf("jni_cleanup: received signal 10 (SIGBUS);  bus error \n");
-  else if ( signal == 2 )
-    printf("jni_cleanup: received signal  2 (SIGINT);  interrupt \n");
-  else if ( signal == 6 )
-    printf("jni_cleanup: received signal  6 (SIGABRT); abort \n");
-  else if ( signal == 18 )        /* 18 (SIGCLD);  child status change */
-    return;
-  else if ( signal == 4 )        /* 18 (SIGCLD);  child status change */
-  {
-    printf("signal 4, ignored \n");
-    return;
-  }
-  else if ( signal == 16 )       /* 16 (SIGUSR1);  user defined signal 1 */
-  {
-    printf("jni_cleanup: received signal 16 (SIGUSR1) \n");
-    printf("jni_cleanup: ignoring signal until reason for signal is better understood \n", signal);
-    return;
-  }
-
-  else
-    printf("jni_cleanup: received signal %d \n", signal);
-
-  if ( shared_mem != 0 )
-  {
-    shared_mem->go_ahead = 1;
-    shared_mem->workload_done = 1;
-    if (shmid != -1)
-      shmctl(shmid, IPC_RMID, 0);
-  }
-
-  exit(0);
-#endif
-}
-
-
-/**
- * Java call to allocate memory for JNI control of workloads.
- * Either allocate true shared memory when JNI will be doing the workload,
- * or allocate non-shared memory when Java does the workload.
- */
-JNIEXPORT void JNICALL Java_Vdb_Native_alloc_1jni_1shared_1memory(JNIEnv *env,
-                                                                  jclass  this,
-                                                                  jboolean jni_in_control,
-                                                                  jstring shared_lib)
-{
-
-#ifdef SOLARIS
-
-  if ( jni_in_control )
-  {
-    int i;
-    for ( i = 0; i < 20; ++i )
-    {
-      /* Removed signal 4. Sonboleh had a situation where it showed up without reason! */
-      if (i != 16 &&  // SIGUSR1
-          i !=  4 &&  // SIGILL
-          i != 11 &&  // SIGSEGV
-          i != 18 &&  // SIGCLD
-          i != 17 )   // SIGUSR2
-        signal(i, jni_cleanup);
-    }
-
-    if ( shared_mem == NULL )
-    {
-      if ( (shmid = shmget(IPC_PRIVATE, sizeof(struct Shared_memory), 0777 | IPC_CREAT)) == -1 )
-      {
-        sprintf(ptod_txt, "shmget failed: length %d", sizeof(struct Shared_memory));
-        PTOD(ptod_txt);
-        ABORT("shmget failed", strerror(errno));
-      }
-
-      if ( (int) (shared_mem = (struct Shared_memory*) shmat(shmid, 0, 0)) == -1 )
-      {
-        PTOD("If you are running Solaris 2.8, you have to increase /etc/system "
-             "set shmsys:shminfo_shmseg=6 (default) to at least the amount "
-             "of runs you are doing. Run 'java vdbench -s' to count the runs.\n");
-        ABORT("shmat failed", strerror(errno));
-      }
-      init_shared_mem();
-    }
-  }
-
-  else
-  {
-    if ( shared_mem == NULL )
-    {
-      shared_mem = (struct Shared_memory*) valloc(sizeof(struct Shared_memory));
-      if ( shared_mem == NULL )
-        ABORT("valloc for shared memory failed", strerror(errno));
-      init_shared_mem();
-    }
-  }
-
-#else
-  if ( shared_mem == NULL )
-  {
-    shared_mem = (struct Shared_memory*) malloc(sizeof(struct Shared_memory));
-    if ( shared_mem == NULL )
-      ABORT("malloc for shared memory failed", strerror(errno));
-    init_shared_mem();
-  }
-#endif
-
-  /* Erase all workload data from previous run: */
-  memset(shared_mem->workload, 0, sizeof(struct Workload) * SHARED_WORKLOADS);
-
-  /* Store the shared library name, used only for vdblite: */
-  strcpy(shared_mem->slib, (*env)->GetStringUTFChars(env, shared_lib, 0));
-
-}
-
-
-/**
- * Free the vdblite shared memory, if there.
- */
-JNIEXPORT void JNICALL Java_Vdb_Native_free_1jni_1shared_1memory(JNIEnv *env,
-                                                                 jclass  this)
-{
-#ifdef SOLARIS
-  if (shmid != -1)
-    shmctl(shmid, IPC_RMID, 0);
-#endif
-}
-
-
-/**
- * Java context to pass on workload information
- */
-JNIEXPORT void JNICALL Java_Vdb_Native_setup_1jni_1context(JNIEnv  *env,
-                                                           jclass  this,
-                                                           jint    xfersize,
-                                                           jdouble seekpct,
-                                                           jdouble readpct,
-                                                           jdouble rhpct,
-                                                           jdouble whpct,
-                                                           jlong   hseek_low,
-                                                           jlong   hseek_high,
-                                                           jlong   hseek_width,
-                                                           jlong   mseek_low,
-                                                           jlong   mseek_high,
-                                                           jlong   mseek_width,
-                                                           jlong   fhandle,
-                                                           jint    threads_requested,
-                                                           jint    workload_no,
-                                                           jstring lun,
-                                                           jstring sdname)
-{
-  struct Workload *wkl;
-
-  if ( shared_mem == NULL )
-  {
-    PTOD("JNI shared memory not yet initialized");
-    abort();
-  }
-
-  if ( workload_no >= SHARED_WORKLOADS )
-  {
-    sprintf(ptod_txt, "vdblite: too many workloads/threads; requested: %d; only %d allowed",
-            workload_no, SHARED_WORKLOADS);
-    PTOD(ptod_txt);
-    abort();
-  }
-
-  if ( threads_requested == 0 )
-  {
-    sprintf(ptod_txt, "JNI received zero thread count\n");
-    PTOD(ptod_txt);
-    abort();
-  }
-
-
-  wkl = &shared_mem->workload[workload_no];
-  wkl->lun    = (char*) (*env)->GetStringUTFChars(env, lun, 0);
-  wkl->sdname = (char*) (*env)->GetStringUTFChars(env, sdname, 0);
-  wkl->xfersize          = xfersize;
-  wkl->seekpct           = seekpct;
-  wkl->rdpct             = readpct;
-  wkl->rhpct             = rhpct;
-  wkl->whpct             = whpct;
-
-  wkl->hits.seek_low     = hseek_low;
-  wkl->hits.seek_high    = hseek_high;
-  wkl->hits.seek_width   = hseek_width;
-  wkl->hits.next_lba     = hseek_low;
-
-  wkl->miss.seek_low     = mseek_low;
-  wkl->miss.seek_high    = mseek_high;
-  wkl->miss.seek_width   = mseek_width;
-  wkl->miss.next_lba     = mseek_low;
-
-  wkl->fhandle           = fhandle;
-  wkl->threads_requested = threads_requested;
-  MUTEX_INIT(wkl->seek_lock, "seek_lock");
-  MUTEX_INIT(wkl->stat_lock, "stat_lock");
-
-  return;
-}
-
-
-/**
- * Java call to get statistics for ONE workload.
- * Also used to signal end-of-run to JNI
- */
-JNIEXPORT void JNICALL Java_Vdb_Native_get_1one_1set_1statistics(JNIEnv   *env,
-                                                                 jclass   this,
-                                                                 jobject  stats,
-                                                                 jint     workload_no,
-                                                                 jboolean workload_done)
-{
-  jclass  cls;
-  struct Workload *wkl = (struct Workload*) &shared_mem->workload[workload_no];
-
-  jfieldID  reads;
-  jfieldID  writes;
-  jfieldID  resptime;
-  jfieldID  resptime2;
-  jfieldID  respmax;
-  jfieldID  read_errors;
-  jfieldID  write_errors;
-  jfieldID  rbytes;
-  jfieldID  wbytes;
-
-
-  /* If we try to send 'done' message and we have no shared memory, that's OK */
-  if ( workload_done && shared_mem == 0 )
-    return;
-
-
-  CHECK(3);
-  LOAD_LONG_ID( reads        , Vdb/WG_stats );
-  //printf("++ wkl: %08p %d %lld\n", wkl, workload_no, wkl->reads);
-  CHECK(4);
-  LOAD_LONG_ID( writes       , Vdb/WG_stats );
-  LOAD_LONG_ID( resptime     , Vdb/WG_stats );
-  LOAD_LONG_ID( resptime2    , Vdb/WG_stats );
-  LOAD_LONG_ID( respmax      , Vdb/WG_stats );
-  LOAD_LONG_ID( read_errors  , Vdb/WG_stats );
-  LOAD_LONG_ID( write_errors , Vdb/WG_stats );
-  LOAD_LONG_ID( rbytes       , Vdb/WG_stats );
-  LOAD_LONG_ID( wbytes       , Vdb/WG_stats );
-  CHECK(5);
-
-  /* Save run status: */
-  shared_mem->workload_done = workload_done ? 1 : 0;
-
-
-  /* Store the data (lock it to make sure that we are not in the middle */
-  /* of an update and the caller sees an average of 511 bytes...        */
-  MUTEX_LOCK(wkl->stat_lock);
-  (*env)->SetLongField(env, stats, reads       , wkl->reads       );
-  (*env)->SetLongField(env, stats, writes      , wkl->writes      );
-  (*env)->SetLongField(env, stats, resptime    , wkl->resptime    );
-  (*env)->SetLongField(env, stats, resptime2   , wkl->resptime2   );
-  (*env)->SetLongField(env, stats, respmax     , wkl->respmax     );
-  (*env)->SetLongField(env, stats, read_errors , wkl->read_errors );
-  (*env)->SetLongField(env, stats, write_errors, wkl->write_errors);
-  (*env)->SetLongField(env, stats, rbytes      , wkl->rbytes      );
-  (*env)->SetLongField(env, stats, wbytes      , wkl->wbytes      );
-  wkl->respmax = 0;
-  MUTEX_UNLOCK(wkl->stat_lock);
-}
-
 
 

@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -39,9 +21,8 @@ import Utils.OS_cmd;
  */
 public class CpuStats
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
-
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private static Kstat_cpu   old_cpu = new Kstat_cpu();
   private static Kstat_cpu   new_cpu = new Kstat_cpu();
@@ -59,6 +40,12 @@ public class CpuStats
    */
   public static Kstat_cpu getNativeCpuStats()
   {
+    if (common.get_debug(common.NO_CPU_STATS))
+    {
+      dlt_cpu = null;
+      return new Kstat_cpu();
+    }
+
     /* Did we already have an error earlier? */
     if (dlt_cpu == null)
       return new Kstat_cpu();
@@ -83,6 +70,10 @@ public class CpuStats
             common.ptod("Unable to obtain CPU statistics: rc=" + rc);
             common.ptod("Possible language issues for PDH field names.");
             common.ptod("Try running 'lodctr /R' to resolve this");
+
+            /* Some language problems may just need to be ignored: */
+            dlt_cpu = null;
+            return null;
           }
           common.failure("Unable to obtain CPU statistics: rc=" + rc);
         }
@@ -260,8 +251,9 @@ public class CpuStats
   /**
    * Make sure that users have some indication that they are low on cycles
    */
-  public static void cpu_shortage()
+  public static void cpu_shortage(RD_entry rd)
   {
+    BoxPrint box = new BoxPrint();
     for (int i = 0; i < Host.getDefinedHosts().size(); i++)
     {
       Host host = (Host) Host.getDefinedHosts().elementAt(i);
@@ -275,21 +267,31 @@ public class CpuStats
       double total = kc.user_pct() + kc.kernel_pct();
       if (total > 80)
       {
-        common.ptod("*");
-        common.ptod("host=" + host.getLabel());
-        common.ptod(Format.f("* Warning: average processor utilization %.2f%% ", total));
-        common.ptod("* Any processor utilization over 80% could mean that your system");
-        common.ptod("* does not have enough cycles to run the highest rate possible ");
-        common.ptod("*");
-
-        common.psum("*");
-        common.psum("host=" + host.getLabel());
-        common.psum(Format.f("* Warning: average processor utilization %.2f%% ", total));
-        common.psum("* Any processor utilization over 80% could mean that your system");
-        common.psum("* does not have enough cycles to run the highest rate possible ");
-        common.psum("*");
+        if (box.size() > 0)
+          box.add("");
+        box.add("Warning for host=%s: average processor utilization %.1f%% ", host.getLabel(), total);
+        box.add("Any processor utilization over 80% could mean that your system");
+        box.add("does not have enough cycles to run the highest rate possible. ");
       }
     }
+    box.printSumm();
+    box.clear();
+
+    int slaves_working = SlaveList.countSlavesWithWork(RD_entry.next_rd);
+    int per_slave      = (int) (Vdbmain.observed_iorate / slaves_working);
+    int limit          = 100000;
+    if (per_slave > limit)
+    {
+      box.add("Warning: total amount of i/o per second per slave (%d) greater than %d.", per_slave, limit);
+      box.add("You may need to adjust your total slave count.");
+      box.add("");
+      box.add("See 'jvms=' in documentation for raw (SD/WD) workloads).");
+      box.add("See 'host=' and/or 'clients=' in documentation for file system (FSD/FWD) workloads).");
+      box.add("");
+      box.add("rd=%s actively used %d slaves. ", rd.rd_name, slaves_working);
+    }
+
+    box.printSumm();
   }
 
 

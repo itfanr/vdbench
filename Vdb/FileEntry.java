@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -28,22 +10,26 @@ package Vdb;
 
 import java.io.*;
 import java.util.*;
+
 import Utils.Format;
+import Utils.Fput;
 
 /**
  * This class contains all data needed for a specific file name
  */
-class FileEntry extends VdbObject implements Comparable
+public class FileEntry implements Comparable
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private Directory parent          = null;
   private long      req_file_size   = 0;       /* Requested file size      */
   private long      cur_file_size   = 0;       /* Current file size        */
   private int       file_no         = 0;
-  private int       file_no_in_list = 0;
+  private int       file_no_in_list = 0;       /* Used for copy/move       */
+  private int       use_count       = 0;
   private boolean   file_opened     = false;
+  private boolean   file_selected   = false;
 
   private boolean   file_exists     = false;
   private boolean   file_busy       = false;
@@ -51,13 +37,15 @@ class FileEntry extends VdbObject implements Comparable
   private boolean   format_complete = false;
   private boolean   marked_busy     = false;
   private boolean   parent_busy     = false;
+  private boolean   file_copied     = false;
+
+  public  boolean   pending_writes  = false;   /* During journal recovery  */
 
   private long      file_start_lba  = 0;       /* Used for Data Validation */
-  private long      bad_bytes       = 0;       /* These two could be ints */
-  private long      bad_blocks      = 0;
+  private int       bad_bytes       = 0;
+  private char      bad_blocks      = 0;
 
   private long      last_lba_used   = 0;
-
 
 
   private static boolean debug = common.get_debug(common.FILEENTRY_SET_BUSY);
@@ -117,11 +105,19 @@ class FileEntry extends VdbObject implements Comparable
         }
       }
 
+      else if (getAnchor().format_complete_used)
+      {
+        file_exists   = true;
+        cur_file_size = req_file_size;
+        getAnchor().countFullFiles(+1, this);
+        parent.countFiles(+1, this);
+      }
+
       /* there is no shortcut from ControlFile: use the file system to get status: */
       else
       {
-        File file_ptr = new File(getName());
-        file_exists   = parent.hasFile(getFileName());
+        File file_ptr = new File(getFullName());
+        file_exists   = parent.hasFile(getShortName());
         if (++queries % 1000000 == 0)
         {
           common.ptod("FileEntry queries: " + queries + " " + found + " " +
@@ -154,18 +150,94 @@ class FileEntry extends VdbObject implements Comparable
   /**
    * Set file busy. If already busy, return false.
    */
-  public synchronized boolean setBusy(boolean bool)
+  public synchronized boolean setFileBusy()
   {
     if (debug)
-      common.ptod("FileEntry.setBusy: " + getName() + " " + file_busy + " ===> " + bool);
+      common.ptod("setFileBusy: " + getFullName() + " " + file_busy);
+
+    /* The old fashioned way: just one user: */
+    if (!getAnchor().fileSharing())
+    {
+      if (file_busy)
+        return false;
+      file_busy = true;
+      return true;
+    }
+
+    /* Sharing files, keep track of use count: */
+    use_count++;
+    file_busy = true;
+    return true;
+  }
+
+  /**
+   * Set Exclusive busy, no oher users.
+   * In spite of allowing file sharing, some times we don't allow it, like when
+   * building the file tables or when we want to delete a file.
+   *
+   * (What happens when we share --creating-- of a file?
+   * Should technically work, but is rediculous.
+   * Oh well, the user asks for it.
+   */
+  public synchronized boolean setFileBusyExc()
+  {
+    if (debug)
+      common.ptod("setFileBusyExc: " + getFullName() + " " + file_busy);
+    //common.ptod("getAnchor().fileSharing(): " + getAnchor().fileSharing());
+
+    if (file_busy)
+      return false;
+    file_busy = true;
+    use_count = 1;
+    return true;
+  }
+
+  public synchronized void setUnBusy()
+  {
+    if (debug)
+      common.ptod("setUnBusy:   " + getFullName() + " " + file_busy);
+
+    if (!file_busy)
+      common.failure("setUnBusy(false): entry not busy: " + getFullName());
+
+    /* The old fashioned way: just one user: */
+    if (!getAnchor().fileSharing())
+    {
+      file_busy = false;
+      if (parent_busy)
+      {
+        parent.setBusy(false);
+        parent_busy = false;
+      }
+    }
+
+    else
+    {
+      /* Sharing file, keep track of use count: */
+      if (--use_count == 0)
+      {
+        file_busy = false;
+        if (parent_busy)
+        {
+          parent.setBusy(false);
+          parent_busy = false;
+        }
+      }
+    }
+  }
+
+  private synchronized boolean obsolete_setBusy(boolean bool)
+  {
+    if (debug)
+      common.ptod("FileEntry.setBusy: " + getFullName() + " " + file_busy + " ===> " + bool);
 
     if (bool && file_busy)
       return false;
 
     else if (!bool && !file_busy)
-      common.failure("FileEntry.setBusy(false): entry not busy: " + getName());
+      common.failure("FileEntry.setBusy(false): entry not busy: " + getFullName());
 
-    file_busy = bool;
+    file_busy   = bool;
     marked_busy = bool;
 
     return true;
@@ -181,8 +253,9 @@ class FileEntry extends VdbObject implements Comparable
 
   public synchronized void cleanup()
   {
-    if (marked_busy)
-      setBusy(false);
+    // 4/8/11: 'marked_busy' is clearly obsolete!
+    //if (marked_busy)
+    setUnBusy();
     if (parent_busy)
     {
       parent.setBusy(false);
@@ -202,9 +275,9 @@ class FileEntry extends VdbObject implements Comparable
   public void setExists(boolean bool)
   {
     if (bool && file_exists)
-      common.failure("setExists(): file already exists: " + getName());
+      common.failure("setExists(): file already exists: " + getFullName());
     if (!bool && !file_exists)
-      common.failure("setExists(): file already does not exist: " + getName());
+      common.failure("setExists(): file already does not exist: " + getFullName());
 
     file_exists = bool;
   }
@@ -224,6 +297,16 @@ class FileEntry extends VdbObject implements Comparable
   public boolean getOpened()
   {
     return file_opened;
+  }
+
+  public void setSelected()
+  {
+    file_selected = true;
+  }
+
+  public boolean isSelected()
+  {
+    return file_selected;
   }
 
   public void setCurrentSize(long size)
@@ -253,25 +336,28 @@ class FileEntry extends VdbObject implements Comparable
     bad_blocks++;
     //common.ptod("bad_bytes: " + bad_bytes + " " + bad_blocks);
 
-    if (bad_bytes > getCurrentSize() / 100)
+    if (bad_file)
+      return;
+
+    if (bad_bytes > getReqSize() / 100)
     {
-      String txt = "setBlockBad(): more than 1% of the file is marked bad. "+
-                   "File no longer will be used: " + getName();
-      ErrorLog.sendMessageToMaster(txt);
+      String txt = "setBlockBad(): more than 1%% of the file is marked bad. "+
+                   "File no longer will be used: " + getFullName();
+      ErrorLog.ptod(txt);
       setBadFile();
     }
     else if (bad_blocks > 100)
     {
       String txt = "setBlockBad(): more than 100 bad blocks in the file are marked bad. "+
-                   "File no longer will be used: " + getName();
-      ErrorLog.sendMessageToMaster(txt);
+                   "File no longer will be used: " + getFullName();
+      ErrorLog.ptod(txt);
       setBadFile();
     }
   }
   private void setBadFile()
   {
     bad_file = true;
-    ErrorLog.sendMessageToMaster("File marked bad: " + getName());
+    ErrorLog.ptod("File marked bad: " + getFullName());
   }
   public boolean isBadFile()
   {
@@ -298,42 +384,22 @@ class FileEntry extends VdbObject implements Comparable
   }
 
   private static long count = 0;
-  public String getName()
+  public String getFullName()
   {
-    //if (++count % 1000 == 0)
-    //{
-    //  common.ptod("Debugging counter: " + count);
-    //  common.where(8);
-    //}
-
-    /*
-    String label = "" + req_file_size;
-    if (req_file_size % GB == 0)
-      label = (req_file_size / GB) + "g";
-
-    else if (req_file_size % MB == 0)
-      label = (req_file_size / MB) + "m";
-
-    else if (req_file_size % KB == 0)
-      label = (req_file_size / KB) + "k";
-      */
-
-    String fname = getFileName();
-
-    return parent.getFullName() + fname;
+    return parent.getFullName() + getShortName();
   }
 
-  public String getFileName()
+
+  public String getShortName()
   {
-    /* Try to avoid the price of using Format.f(): */
-    if (file_no < 10)
-      return "vdb_f000" + file_no + ".file";
-    else if (file_no < 100)
-      return "vdb_f00" + file_no + ".file";
-    else if (file_no < 1000)
-      return "vdb_f0" + file_no + ".file";
+    String name;
+    if (!common.get_debug(common.LONGER_FILENAME))
+      name = String.format("vdb_f%04d.file", file_no);
     else
-      return "vdb_f" + file_no + ".file";
+      name = String.format("vdb_f%04d.%04d.file", file_no, file_no_in_list);
+
+    //common.ptod("name: " + name);
+    return name;
   }
 
   public Directory getParent()
@@ -362,14 +428,37 @@ class FileEntry extends VdbObject implements Comparable
     return last_lba_used;
   }
 
+  public boolean hasBeenCopied()
+  {
+    return file_copied;
+  }
+  public void setCopied(boolean bool)
+  {
+    file_copied = bool;
+  }
 
+
+  /**
+   * Windows has a problem with quick delete/create:
+   * http://stackoverflow.com/questions/3764072/c-win32-how-to-wait-for-a-pending-delete-to-complete
+   *
+   * The result is that at create time the delete may not have been completed
+   * yet.
+   * Oh well. Adding a 5 ms sleep after the delete went around the problem, but
+   * I do not make that a permanent change.
+   * But let's get real: who is going to notice? Sleep is in. NOT!
+   *
+   * This problem of course shows up with fileio=(seq,delete)
+   */
   public void deleteFile(FwgEntry fwg)
   {
     long start = Native.get_simple_tod();
-    File file_ptr = new File(getName());
+    File file_ptr = new File(getFullName());
     if (!file_ptr.delete())
-      common.failure("unable to delete file " + getName());
+      common.failure("unable to delete file " + getFullName());
     FwdStats.count(Operations.DELETE, start);
+    //if (common.onWindows())
+    //  common.sleep_some(5);
 
     parent.countFiles(-1, this);
     setExists(false);
@@ -380,17 +469,30 @@ class FileEntry extends VdbObject implements Comparable
 
     if (Validate.isValidate())
       getAnchor().allocateKeyMap(file_start_lba).clearMapForFile(req_file_size);
-    //common.ptod("deleted: " + getName());
+    if (debug)
+      common.ptod("deleted: " + getFullName());
   }
 
 
   public int compareTo(Object obj)
   {
     FileEntry fe = (FileEntry) obj;
-    return(int) getName().compareTo(fe.getName());
+    return(int) getFullName().compareTo(fe.getFullName());
   }
   public String toString()
   {
-    return "FileEntry: " + getName() + " busy: " + isBusy();
+    return "FileEntry: " + getFullName() + " busy: " + isBusy();
+  }
+
+  public static void main(String[] args)
+  {
+    int loop = Integer.parseInt(args[0]) * 1000;
+    for (int i = 0; i < loop; i++)
+    {
+      Fput fp = new Fput("w:/temp/file1");
+      fp.close();
+      new File(fp.getName()).delete();
+    }
+
   }
 }

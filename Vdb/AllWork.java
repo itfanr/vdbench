@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -29,7 +11,7 @@ package Vdb;
 import java.util.*;
 
 /**
- * The class stores all Work() instances and with that can keep track of which
+ * This class stores all Work() instances and with that can keep track of which
  * SD is used where.
  *
  * We could maintain individual lists, but it seems easier to just always
@@ -43,19 +25,21 @@ import java.util.*;
  */
 public class AllWork
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.";
 
-  private static Vector work_list = new Vector(8, 0);
+  private static Vector <Work> work_list = new Vector(8, 0);
 
 
 
   public static void addWork(Work work)
   {
+    common.where();
     work_list.add(work);
   }
   public static void clearWork()
   {
+    common.where();
     work_list.removeAllElements();
   }
 
@@ -63,7 +47,7 @@ public class AllWork
   /**
    * Return SDs used anywhere
    */
-  public static String[] getSdList()
+  public static String[] obsolete_getRealUsedSdNames()
   {
     HashMap map = new HashMap(16);
     for (int i = 0; i < work_list.size(); i++)
@@ -71,8 +55,10 @@ public class AllWork
       Work work = (Work) work_list.elementAt(i);
       for (int j = 0; j < work.wgs_for_slave.size(); j++)
       {
-        WG_entry wg = (WG_entry) work.wgs_for_slave.elementAt(j);
-        map.put(wg.sd_used.sd_name, null);
+        WG_entry wg = (WG_entry) work.wgs_for_slave.get(j);
+        String[] names = wg.getRealSdNames();
+        for (int k = 0; k < names.length; k++)
+          map.put(names[k], null);
       }
     }
 
@@ -82,9 +68,9 @@ public class AllWork
   /**
    * Return SDs used in a host
    */
-  public static String[] getSdList(Host host)
+  public static String[] obsolete_getRealHostSdList(Host host)
   {
-    HashMap map = new HashMap(16);
+    HashMap <String, Object> map = new HashMap(16);
     for (int i = 0; i < work_list.size(); i++)
     {
       Work work = (Work) work_list.elementAt(i);
@@ -93,8 +79,10 @@ public class AllWork
 
       for (int j = 0; j < work.wgs_for_slave.size(); j++)
       {
-        WG_entry wg = (WG_entry) work.wgs_for_slave.elementAt(j);
-        map.put(wg.sd_used.sd_name, null);
+        WG_entry wg = (WG_entry) work.wgs_for_slave.get(j);
+        String[] names = wg.getRealSdNames();
+        for (int k = 0; k < names.length; k++)
+          map.put(names[k], null);
       }
     }
 
@@ -104,7 +92,7 @@ public class AllWork
   /**
    * Return SDs used in a slave
    */
-  public static String[] getSdList(Slave slave)
+  public static String[] obsolete_getSlaveSdList(Slave slave)
   {
     HashMap map = new HashMap(16);
     for (int i = 0; i < work_list.size(); i++)
@@ -115,7 +103,7 @@ public class AllWork
 
       for (int j = 0; j < work.wgs_for_slave.size(); j++)
       {
-        WG_entry wg = (WG_entry) work.wgs_for_slave.elementAt(j);
+        WG_entry wg = (WG_entry) work.wgs_for_slave.get(j);
         map.put(wg.sd_used.sd_name, null);
       }
     }
@@ -126,19 +114,19 @@ public class AllWork
   /**
    * Return SDs used for this RD_entry
    */
-  public static String[] getSdList(RD_entry rd)
+  public static String[] obsolete_getRdSdList(RD_entry rd)
   {
     HashMap map = new HashMap(16);
-    for (int i = 0; i < work_list.size(); i++)
+
+    for (Work work : work_list)
     {
-      Work work = (Work) work_list.elementAt(i);
       if (work.rd != rd)
         continue;
 
-      for (int j = 0; j < work.wgs_for_slave.size(); j++)
+      for (WG_entry wg : work.wgs_for_slave)
       {
-        WG_entry wg = (WG_entry) work.wgs_for_slave.elementAt(j);
-        map.put(wg.sd_used.sd_name, null);
+        for (String name : wg.getRealSdNames())
+          map.put(name, null);
       }
     }
 
@@ -148,7 +136,7 @@ public class AllWork
   /**
    * Return SDs used in a host for this RD_entry
    */
-  public static String[] getSdList(Host host, RD_entry rd)
+  public static String[] obsolete_getHostRdSdList(Host host, RD_entry rd)
   {
     HashMap map = new HashMap(16);
     for (int i = 0; i < work_list.size(); i++)
@@ -161,7 +149,7 @@ public class AllWork
 
       for (int j = 0; j < work.wgs_for_slave.size(); j++)
       {
-        WG_entry wg = (WG_entry) work.wgs_for_slave.elementAt(j);
+        WG_entry wg = (WG_entry) work.wgs_for_slave.get(j);
         map.put(wg.sd_used.sd_name, null);
       }
     }
@@ -172,7 +160,7 @@ public class AllWork
   /**
    * Return SDs used in a slave for this RD_entry
    */
-  public static String[] getSdList(Slave slave, RD_entry rd)
+  public static String[] obsolete_getSlaveRdSdList(Slave slave, RD_entry rd)
   {
     HashMap map = new HashMap(16);
     for (int i = 0; i < work_list.size(); i++)
@@ -185,7 +173,7 @@ public class AllWork
 
       for (int j = 0; j < work.wgs_for_slave.size(); j++)
       {
-        WG_entry wg = (WG_entry) work.wgs_for_slave.elementAt(j);
+        WG_entry wg = (WG_entry) work.wgs_for_slave.get(j);
         map.put(wg.sd_used.sd_name, null);
       }
     }

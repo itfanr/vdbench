@@ -1,47 +1,58 @@
 
-
-#
-#
-# Copyright 2010 Sun Microsystems, Inc. All rights reserved.
-#
-# DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
-#
-# The contents of this file are subject to the terms of the Common
-# Development and Distribution License("CDDL") (the "License").
-# You may not use this file except in compliance with the License.
-#
-# You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
-# or ../vdbench/license.txt. See the License for the
-# specific language governing permissions and limitations under the License.
-#
-# When distributing the software, include this License Header Notice
-# in each file and include the License file at ../vdbench/licensev1.0.txt.
-#
-# If applicable, add the following below the License Header, with the
-# fields enclosed by brackets [] replaced by your own identifying information:
-# "Portions Copyrighted [year] [name of copyright owner]"
-#
-
-#
-# Author: Henk Vandenbergh.
-#
-
-
-cd /net/129.147.9.187/export/home1/16/hv104788/vdbench500/Jni
-
 echo compiling vdbjni.c
-/opt/aCC/bin/aCC  -I/opt/java6/include/ -I/opt/java6/include/hp-ux/ -Ae +u4 +z  -c vdbjni.c -DHP
+cc  -I/opt/java1.4/include/ -I/opt/java1.4/include/hp-ux/ -Ae +u4 +z  -c vdbjni.c -DHP
 
 echo compiling vdbhp.c
-/opt/aCC/bin/aCC  -I/opt/java6/include/ -I/opt/java6/include/hp-ux/ -Ae +u4 +z  -c vdbhp.c  -DHP
+cc  -I/opt/java1.4/include/ -I/opt/java1.4/include/hp-ux/ -Ae +u4 +z  -c vdbhp.c  -DHP
 
 echo compiling vdb.c
-/opt/aCC/bin/aCC  -I/opt/java6/include/ -I/opt/java6/include/hp-ux/ -Ae +u4 +z  -c vdb.c  -DHP
+cc  -I/opt/java1.4/include/ -I/opt/java1.4/include/hp-ux/ -Ae +u4 +z  -c vdb.c  -DHP
 
 echo compiling vdb_dv.c
-/opt/aCC/bin/aCC  -I/opt/java6/include/ -I/opt/java6/include/hp-ux/ -Ae +u4 +z  -c vdb_dv.c  -DHP
+cc  -I/opt/java1.4/include/ -I/opt/java1.4/include/hp-ux/ -Ae +u4 +z  -c vdb_dv.c  -DHP
 
 echo linking libvdbench.sl
-ld  -b -o ../hp/libvdbench.sl vdbjni.o vdbhp.o vdb.o vdb_dv.o
+ld  -b -o hp/libvdbench.sl vdbjni.o vdbhp.o vdb.o vdb_dv.o
+
+
+
+Below received from Hisayoshi.Kato@Sun.COM on 3/24/06:
+
+echo compiling vdbjni.c
+cc  -I/opt/java1.4/include/ -I/opt/java1.4/include/hp-ux/ -Ae +u4 +z  -c vdbjni.c -DHP
+
+echo compiling vdbhp.c
+cc  -I/opt/java1.4/include/ -I/opt/java1.4/include/hp-ux/ -Ae +u4 +z  -c vdbhp.c  -DHP
+
+echo compiling vdb.c
+cc  -I/opt/java1.4/include/ -I/opt/java1.4/include/hp-ux/ -Ae +u4 +z  -c vdb.c  -DHP
+
+echo compiling vdb_dv.c
+cc  -I/opt/java1.4/include/ -I/opt/java1.4/include/hp-ux/ -Ae +u4 +z  -c vdb_dv.c  -DHP
+
+echo linking libvdbench.sl
+ld  -b -o hp/libvdbench.sl vdbjni.o vdbhp.o vdb.o vdb_dv.o
+
+
+#
+# WARNING: All compiler warnings may be ignored. They are all typecast related
+#
+
+with following messages:
+
+# ./make.hp
+compiling vdbjni.c
+(Bundled) cc: warning 922: "-Ae" is unsupported in the bundled compiler, ignored.
+(Bundled) cc: warning 922: "+u4" is unsupported in the bundled compiler, ignored.
+compiling vdbhp.c
+(Bundled) cc: warning 922: "-Ae" is unsupported in the bundled compiler, ignored.
+(Bundled) cc: warning 922: "+u4" is unsupported in the bundled compiler, ignored.
+compiling vdb.c
+(Bundled) cc: warning 922: "-Ae" is unsupported in the bundled compiler, ignored.
+(Bundled) cc: warning 922: "+u4" is unsupported in the bundled compiler, ignored.
+compiling vdb_dv.c
+(Bundled) cc: warning 922: "-Ae" is unsupported in the bundled compiler, ignored.
+(Bundled) cc: warning 922: "+u4" is unsupported in the bundled compiler, ignored.
+linking libvdbench.sl
 
 

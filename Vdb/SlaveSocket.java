@@ -1,46 +1,29 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
 
-import java.util.*;
-import java.net.*;
 import java.io.*;
-import Utils.Format;
-import Utils.Fget;
-import Utils.ClassPath;
+import java.net.*;
+import java.util.*;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
+
+import Utils.*;
 
 
 /**
  * This class handles socket communications between master and slave.
  */
-class SlaveSocket implements Serializable
+public class SlaveSocket implements Serializable
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   /* You may only see these names in messages during signon */
   private String slave_name  = "signon";
@@ -54,11 +37,17 @@ class SlaveSocket implements Serializable
 
   private long               last_heartbeat_received = System.currentTimeMillis();
 
+  private static Object bytes_lock = new Object();
+  private static long bytes_raw    = 0;
+  private static long bytes_zip    = 0;
+
+  public static long shortest_delta = Long.MAX_VALUE;
+
   private static int remote_port = 5560;
   private static int master_port = 5570;
 
-  private static boolean print_put_get = common.get_debug(common.SHOW_SOCKET_MESSAGES);
 
+  private static boolean dont_zip = common.get_debug(common.DONT_ZIP_SOCKET_MSGS);
 
   /**
    * This instantiation connects from slave to master
@@ -72,6 +61,7 @@ class SlaveSocket implements Serializable
     /* I am suspicious that sotimers popping too often concurrently with        */
     /* a real message arriving has caused some unexplained hangs                */
     socket.setSoTimeout(120 * 1000);
+    setBufferSize();
 
     ostream = new ObjectOutputStream(socket.getOutputStream());
     istream = new ObjectInputStream(socket.getInputStream());
@@ -92,6 +82,7 @@ class SlaveSocket implements Serializable
     ///* I therefore set the timeout to only one second and manually check for    */
     ///* isInterrupted()                                                          */
     socket.setSoTimeout(120 * 1000);
+    setBufferSize();
   }
 
   public void setSlaveLabel(String label)
@@ -146,22 +137,69 @@ class SlaveSocket implements Serializable
       try
       {
         sm = (SocketMessage) istream.readObject();
+        sm.receive_time = System.currentTimeMillis();
+
+        if (!dont_zip)
+          sm.setData(unCompressObj((byte[]) sm.getData()));
+
+        long delta = sm.receive_time - sm.send_time;
+        if (delta < shortest_delta)
+        {
+          shortest_delta = delta;
+          if (common.get_debug(common.SHOW_SOCKET_MESSAGES))
+            common.ptod("shortest_delta: " + shortest_delta);
+        }
+
+        /* Optional report the message size just received on the master: */
+        if (!SlaveJvm.isThisSlave()
+            //&& sm.getMessageNum() == SocketMessage.SLAVE_STATISTICS
+            && common.get_debug(common.REPORT_MESSAGE_SIZE))
+        {
+          int    org_size = CompressObject.sizeof(sm);
+          int    zip_size = compressObj(sm).length;
+          double ratio    = (double) org_size / zip_size;
+
+          synchronized (bytes_lock)
+          {
+            bytes_raw += org_size;
+            bytes_zip += zip_size;
+            double ratio2 = (double) bytes_raw / bytes_zip;
+
+            common.ptod("getMessage length: " +
+                        SlaveList.getLabelMask() +
+                        " %6d %6d %6.2f:1 %,12d %,12d %6.2f:1 %s ",
+                        slave_label, org_size, zip_size, ratio,
+                        bytes_raw, bytes_zip, ratio2, sm.getMessageText());
+          }
+        }
       }
 
       catch (EOFException e)
       {
         if (shutdown_in_progress)
           return null;
-        common.ptod("");
-        common.ptod("Receiving unexpected EOFException from slave: " + slave_label);
-        common.ptod("This means that this slave terminated prematurely.");
+        if (Ctrl_c.active())
+          return null;
+        Vector lines = new Vector(16);
+        lines.add("");
+        if (!SlaveJvm.isThisSlave())
+        {
+          lines.add("Receiving unexpected EOFException from slave: " + slave_label);
+          lines.add("This means that this slave terminated prematurely.");
+        }
+        else
+        {
+          lines.add("Receiving unexpected EOFException from the master");
+          lines.add("This means that the master terminated prematurely.");
+        }
 
         /* If we abort here right away we don't give SlaveStarter() and  */
         /* OS_cmd() the chance to recognize that this slave disappeared. */
         /* It is cleaner to have them abort, and not do it here.         */
-        common.ptod("This thread will go to sleep for 5 seconds to allow ");
-        common.ptod("slave termination to be properly recognized.");
-        common.ptod("");
+        lines.add("This thread will go to sleep for 5 seconds to allow ");
+        lines.add("slave termination to be properly recognized.");
+        lines.add("");
+        common.ptod(lines);
         common.sleep_some(5000);
 
         common.failure(e);
@@ -174,16 +212,17 @@ class SlaveSocket implements Serializable
         /* Remove any outstanding interrupt: */
         //Thread.currentThread().interrupted();
 
-        common.ptod("");
-        common.ptod("SocketException from slave: " + slave_label);
-        common.ptod("Slave " + slave_label + " terminated unexpectedly.");
-
-        Slave slave = SlaveList.findSlave(slave_label);
-        common.ptod("Look at file " + slave.getConsoleLog().getFileName() +
-                    ".html for more information.");
+        Slave slave = SlaveList.findSlaveLabel(slave_label);
+        Vector msgs = new Vector(8);
+        msgs.add("");
+        msgs.add("SocketException from slave: " + slave_label);
+        msgs.add("Slave " + slave_label + " terminated unexpectedly.");
+        msgs.add("Look at file " + slave.getConsoleLog().getFileName() +
+                 ".html for more information.");
+        msgs.add("");
         common.plog("HTML link: <A HREF=\"" + slave.getConsoleLog().getFileName() + ".html\">" +
                     slave.getConsoleLog().getFileName() + ".html</A>");
-
+        common.ptod(msgs);
 
         common.failure(e);
       }
@@ -211,19 +250,38 @@ class SlaveSocket implements Serializable
         common.failure(e);
       }
 
-      if (print_put_get || common.get_debug(common.SOCKET_TRAFFIC))
+      /* Debugging: */
+      long resptime = sm.receive_time - sm.send_time - shortest_delta;
+      if (common.get_debug(common.SHOW_SOCKET_MESSAGES) ||
+          common.get_debug(common.SOCKET_TRAFFIC))
       {
         if (common.get_debug(common.SOCKET_TRAFFIC))
-          common.ptod(Format.f("getMessage: %-12s", slave_label) +
-                      Format.f(" %3d ", sm.getSeqno()) + sm.getMessageText());
+          common.ptod("getMessage: %-12s %3d %5d %s",
+                      slave_label, sm.getSeqno(), resptime, sm.getMessageText());
+
         else
-          common.plog(Format.f("getMessage: %-12s", slave_label) +
-                      Format.f(" %3d ", sm.getSeqno()) + sm.getMessageText());
+          common.plog("getMessage: %-12s %3d %5d %s",
+                      slave_label, sm.getSeqno(), resptime, sm.getMessageText());
       }
+
+      /* Extra info to help with possible slow socket traffic: */
+      // This tells you that it took nnn milliseconds between SENDER and RECEIVER!
+      if (resptime > 5000)
+        common.plog("Slow getMessage: %-12s %3d %5d %s",
+                    slave_label, sm.getSeqno(), resptime, sm.getMessageText());
+
 
       /* Remember when we last heard from this guy: */
       if (sm.getMessageNum() == SocketMessage.HEARTBEAT_MESSAGE)
         last_heartbeat_received = System.currentTimeMillis();
+
+
+      // To figure out the size of the object:
+      // vdbench -tf: 26391 bytes for one FSD.
+      // three fsds two workloads: 38000
+      // three fsds one workloads: 32000
+      // In other words: noise.
+      // SD: 1536-2048 bytes per SD * WD * slaves
 
       return sm;
     }
@@ -240,36 +298,63 @@ class SlaveSocket implements Serializable
   {
     Exception error = null;
 
+    /* Any text message sent to the master also goes on the slave's log. */
+    /* We don't need the socket lock to do that: */
+    if (sm.getMessageNum() == SocketMessage.CONSOLE_MESSAGE &&
+        sm.getData() instanceof String)
+      common.plog("Message to master: " + (String) sm.getData());
+
     synchronized(this)
     {
       while (true)
       {
         sm.setSeqno();
 
-        if (print_put_get || common.get_debug(common.SOCKET_TRAFFIC))
+        if (common.get_debug(common.SHOW_SOCKET_MESSAGES) ||
+            common.get_debug(common.SOCKET_TRAFFIC))
         {
           if (common.get_debug(common.SOCKET_TRAFFIC))
-            common.ptod(Format.f("putMessage: %-12s", slave_label) +
-                        Format.f(" %3d ", sm.getSeqno()) + sm.getMessageText());
+            common.ptod("putMessage: %-12s %3d       %s",
+                        slave_label, sm.getSeqno(), sm.getMessageText());
           else
-            common.plog(Format.f("putMessage: %-12s", slave_label) +
-                        Format.f(" %3d ", sm.getSeqno()) + sm.getMessageText());
+            common.plog("putMessage: %-12s %3d       %s",
+                        slave_label, sm.getSeqno(), sm.getMessageText());
         }
-
-        /* Any text message sent to the master also goes on the slave's log: */
-        if (sm.getMessageNum() == SocketMessage.CONSOLE_MESSAGE &&
-            sm.getData() instanceof String)
-          common.plog("Message to master: " + (String) sm.getData());
 
         try
         {
+          if (!dont_zip)
+            sm.setData(compressObj(sm.getData()));
+
+          long start = System.currentTimeMillis();
+          sm.send_time = System.currentTimeMillis();
           ostream.reset();
           ostream.writeObject(sm);
           ostream.flush();
+          long end = System.currentTimeMillis();
+
+
+          // To figure out the size of the object:
+          // vdbench -tf: 26391 bytes for one FSD.
+          // three fsds two workloads: 38000
+          // three fsds one workloads: 32000
+          // In other words: noise.
+          //String tmpf = Fput.createTempFileName("one", "two");
+          //common.serial_out(tmpf, sm);
+          //common.ptod("length: %8d %s %6d", new File(tmpf).length(),
+          //            sm.getMessageText(), (end - start));
         }
 
         catch (SocketException e)
         {
+          /* If the slave already told us he is aborting, don't bother any more: */
+          if (!SlaveJvm.isThisSlave())
+          {
+            Slave slave = SlaveList.findSlaveLabel(slave_label);
+            if (slave.isAborted())
+              break;
+          }
+
           if (!try_recovery)
           {
             common.ptod("SocketException during putMessage(sm). Continuing");
@@ -288,9 +373,22 @@ class SlaveSocket implements Serializable
         }
 
         if (error != null)
+        {
           break;
+        }
 
         return true;
+      }
+    }
+
+    /* We can't do ptod() above due to deadlock risk:*/
+    if (!SlaveJvm.isThisSlave())
+    {
+      Slave slave = SlaveList.findSlaveLabel(slave_label);
+      if (slave.isAborted())
+      {
+        common.plog("SocketException from aborting slave. That's OK.");
+        return false;
       }
     }
 
@@ -307,6 +405,11 @@ class SlaveSocket implements Serializable
   public long getlastHeartBeat()
   {
     return last_heartbeat_received;
+  }
+
+  public void setlastHeartBeat()
+  {
+    last_heartbeat_received = System.currentTimeMillis();
   }
 
 
@@ -331,6 +434,92 @@ class SlaveSocket implements Serializable
     }
 
     socket = null;
+  }
+
+
+  /**
+   * Set the buffer sizes to a minimum of 48k.
+   *
+   * This was added as an attempt to fix frequent windows 2008 server socket
+   * reset problems. Not sure if it helps, but 8k on windows just feels too
+   * small anyway, that with 48k being the solaris default.
+   *
+   * BTW: the Win2008 problem was caused by SOME Linux system on the network
+   * being rebooted, that indirectly (why the heck?) causing all win2008 java
+   * sockets to be reset. Go figure!
+   */
+  private void setBufferSize()
+  {
+    try
+    {
+      int BUFFER_SIZE = 48*1024;
+      if (socket.getSendBufferSize() < BUFFER_SIZE)
+        socket.setSendBufferSize(BUFFER_SIZE);
+      if (socket.getReceiveBufferSize() < BUFFER_SIZE)
+        socket.setReceiveBufferSize(BUFFER_SIZE);
+      //common.ptod("socket.getSendBufferSize():   " + socket.getSendBufferSize());
+      //common.ptod("ocket.getReceiveBufferSize(): " + socket.getReceiveBufferSize());
+    }
+    catch (Exception e)
+    {
+      common.failure(e);
+    }
+  }
+
+
+  private byte[] compressObj(Object obj)
+  {
+    if (obj == null)
+      return null;
+
+    try
+    {
+      ByteArrayOutputStream bos = new ByteArrayOutputStream();
+      GZIPOutputStream      zos = new GZIPOutputStream(bos);
+      ObjectOutputStream    ous = new ObjectOutputStream(zos);
+
+      ous.writeObject(obj);
+      zos.finish();
+      bos.flush();
+
+      return bos.toByteArray();
+    }
+    catch (Exception e)
+    {
+      common.failure(e);
+      return null;
+    }
+  }
+
+  private Object unCompressObj(byte[] array)
+  {
+    if (array == null)
+      return null;
+
+    try
+    {
+      Object obj = null;
+
+      ByteArrayInputStream bis = new ByteArrayInputStream(array);
+      GZIPInputStream      zis = new GZIPInputStream(bis);
+      ObjectInputStream    ois = new ObjectInputStream(zis);
+
+      try
+      {
+        obj = ois.readObject();
+      }
+      catch (ClassNotFoundException e)
+      {
+        common.failure(e);
+      }
+
+      return obj;
+    }
+    catch (Exception e)
+    {
+      common.failure(e);
+      return null;
+    }
   }
 }
 

@@ -1,26 +1,8 @@
 package Utils;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -31,7 +13,6 @@ import java.io.*;
 import java.text.*;
 import java.lang.*;
 import java.net.*;  // for inetaddr
-import java.math.BigInteger;
 
 
 /**
@@ -42,29 +23,15 @@ import java.math.BigInteger;
  */
 public class common
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.";
 
-
-
-  private static PrintWriter ptod_output = new PrintWriter(System.out, true);
+  private static PrintWriter ptod_output = new PrintWriter(System.out, false);
   private static PrintWriter log_html    = null;
 
 
   /* Debug flags for all packages, including Utils.                  */
-  /* Debug flags above 200 however are dedicated to Utils so that we */
-  /* don't get in each other's way                                   */
   private static boolean[] debug_flags = new boolean[256];
-
-  public static int TMP_TEST1   = 201;  /* Force expired message */
-  public static int TMP_TEST2   = 202;  /* Force warning message */
-  public static int TMP_TEST3   = 203;  /* Force warning message */
-
-
-  /* 255 is hardcoded in both Swat and Vdbench and is triggered by */
-  /* adding '-expired' as an execution parameter                   */
-  public static int TMP_TEST255 = 255;  /* Give an extra 30 days */
-
 
   public static Object ptod_lock = new Object();
 
@@ -114,11 +81,6 @@ public class common
       }
       ptod_output.println(tod() + " " + txt);
     }
-  }
-
-  public static void ptod(String format, Object ... args)
-  {
-    ptod(String.format(format, args));
   }
 
   public static String tod()
@@ -293,23 +255,6 @@ public class common
     }
 
     return source;
-  }
-
-  /**
-   * Replace a string within a string.
-   * This is a 'replace once'.
-   */
-  public static String replace_string(String string, String find, String replace)
-  {
-
-    if (string.indexOf(find) != -1)
-    {
-      String one = string.substring(0, string.indexOf(find));
-      String two = string.substring(string.indexOf(find) + find.length());
-      return one + replace + two;
-    }
-    else
-      return string;
   }
 
 

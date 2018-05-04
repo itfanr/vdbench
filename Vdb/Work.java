@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -29,16 +11,15 @@ package Vdb;
 import java.util.*;
 import java.io.*;
 import Utils.Format;
-import Oracle.OracleParms;
 
 
 /**
  * This class contains information eneded for a slave to do its work
  */
-public class Work extends VdbObject implements Serializable
+public class Work implements Serializable
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   public transient RD_entry rd;   /* Used only on the master */
   public String   work_rd_name;
@@ -46,40 +27,49 @@ public class Work extends VdbObject implements Serializable
   public String   slave_label;
   public int      slave_count;
   public int      slave_number;
+
   public String   host_label;
+  private HashMap  <String, String> luns_on_host = null;  /* sd_name, lun */
+
   public boolean  use_waiter;
-  public boolean  tape_testing;
-  public Vector   wgs_for_slave;
+  public ArrayList  <WG_entry> wgs_for_slave;
   public int      sequential_files;
   public int      distribution;
   public OpenFlags rd_open_flags;         /* Only for WD workloads */
-  public String   pattern_dir;
 
   public Vector   instance_pointers;   /* Kstat pointers to collect data from */
 
-  public Vector   fwgs_for_slave;
+  public Vector   <FwgEntry> fwgs_for_slave;
   public boolean  format_run;
   public FormatFlags format_flags;
   public double   fwd_rate;
-  public long     maximum_xfersize;
+  public int      maximum_xfersize;
 
-  public boolean  replay;
-  public String   replay_filename;
-  public double   replay_adjust;
-  public Vector   replay_device_list;
+  public ReplayInfo replay_info;
 
   public Validate validate_options;
+  public Patterns pattern_options;
   public boolean  journal;
+  public boolean  only_eof_writes;
 
   public boolean  force_fsd_cleanup = false;
 
-  public long     dump_journals_every;
-
-  public OracleParms oparms;
   public Debug_cmds rd_start_command;
   public Debug_cmds rd_end_command;
 
-  public HashMap  threads_for_sd;
+  public ArrayList <String[]> miscellaneous;
+
+  public boolean   keep_controlfile = false;
+
+
+  /* Map containing as key sd_name + '/' + slave label.                     */
+  /* Value stored: an ArrayList of integers, one instance per thread.       */
+  /* The integer will contain the stream number to be used for this thread. */
+  /* See also RD_entry.threads_per_slave_map                                */
+  /* (It looks as if the WHOLE map is sent to each slave, and not only the  */
+  /* elements needed for the slave. I can live with that).                  */
+  private HashMap  <String, ArrayList <StreamContext> > threads_for_slave_map;
+  public int      threads_from_rd = 0;
 
   public HashMap  bucket_types;
 
@@ -93,16 +83,29 @@ public class Work extends VdbObject implements Serializable
    */
   public Vector convertWgListToSdList()
   {
-    HashMap map = new HashMap(8);
+    HashMap <String, SD_entry> map = new HashMap(8);
 
     for (int i = 0; i < wgs_for_slave.size(); i++)
     {
-      WG_entry wg = (WG_entry) wgs_for_slave.elementAt(i);
+      WG_entry wg = (WG_entry) wgs_for_slave.get(i);
       SD_entry sd = wg.sd_used;
       map.put(sd.sd_name, sd);
 
       /* Also copy the proper lun/file name to the sd: */
-      sd.lun       = wg.host_lun;
+      sd.lun = getLunNameForSd(sd);
+      if (!sd.concatenated_sd && sd.lun == null)
+        common.failure("convertWgListToSdList: null lun");
+
+      if (sd.concatenated_sd)
+      {
+        for (SD_entry sd2 : sd.sds_in_concatenation)
+        {
+          sd2.lun = getLunNameForSd(sd2);
+          if (sd2.lun == null)
+            common.ptod("convertWgListToSdList: null lun");
+          //sd2.lun = unix2Windows(slave.getHost(), wg.host_lun);
+        }
+      }
 
       /* Replay needs to have a WG_entry to be placed in Cmd_entry. */
       /* (This is a dummy WG_entry anyway).                         */
@@ -116,6 +119,23 @@ public class Work extends VdbObject implements Serializable
     return new Vector(map.values());
   }
 
+  /**
+   * Find the proper host specific lun name for an SD.
+   * If non is found, use the one coded in the SD_entry itself.
+   */
+  public String getLunNameForSd(SD_entry sd)
+  {
+    String lun = luns_on_host.get(sd.sd_name);
+
+    if (lun == null)
+    {
+      if (!sd.concatenated_sd && sd.lun == null)
+        common.failure("getLunNameForSd: null sd.lun");
+      return sd.lun;
+    }
+    else
+      return lun;
+  }
 
   /**
    * Prepare the Work() instances that need to be sent to each slave.
@@ -132,12 +152,73 @@ public class Work extends VdbObject implements Serializable
       HandleSkew.spreadWgSkew(rd);
       HandleSkew.calcLeftoverWgSkew(rd);
       prepareWgWork(rd, run);
+      if (run)
+      {
+        rd.spreadStreamsAcrossSlaves(true);
+        //reportStuff(rd);
+      }
     }
     else
       prepareFwgWork(rd, run);
   }
 
+  private static void reportStuff(RD_entry rd)
+  {
+    long total_size    = 0;
+    long total_threads = 0;
+    long key_blocks    = 0;
+    long buffers       = 0;
 
+    /* Collect all unique SDs used: */
+    HashMap <SD_entry, Long> sd_map = new HashMap(8);
+    for (Slave slave : SlaveList.getSlaveList())
+    {
+      Work work = slave.getCurrentWork();
+
+
+      for (SD_entry sd : work.getSdsForRun())
+      {
+        long max_xfer = sd.getMaxSdXfersize();
+        if (Validate.sdConcatenation() && work.threads_from_rd != 0)
+          max_xfer = work.maximum_xfersize;
+        sd_map.put(sd, max_xfer);
+      }
+    }
+
+    /* Add up all the sizes: */
+    for (SD_entry sd : sd_map.keySet())
+    {
+      long xfersize = sd_map.get(sd);
+      total_size    += sd.end_lba;
+      key_blocks    += (sd.end_lba / xfersize);
+    }
+
+    /* And now add up all the threads: */
+    for (Slave slave : SlaveList.getSlaveList())
+    {
+      for (SD_entry sd : slave.getCurrentWork().getSdsForRun())
+      {
+        int threads = rd.getSdThreadsUsedForSlave(sd.sd_name, slave);
+        total_threads += threads;
+        buffers       += sd_map.get(sd) * threads * 2;
+      }
+    }
+
+    common.ptod("total_size:    %,12d ", total_size);
+    common.ptod("total_threads: %,12d ", total_threads);
+    common.ptod("key_blocks:    %,12d ", key_blocks);
+    common.ptod("buffers:       %,12d ", buffers);
+
+    // these are JAVA
+    long bytes_for_bits = key_blocks / 8;
+
+    if (!Validate.isValidate())
+      common.ptod("Estimated non-java memory needs for rd=%s: %,d bytes or %.3f mb",
+                  rd.rd_name, buffers, buffers / 1048576.);
+    else
+      common.ptod("Estimated non-java memory needs for rd=%s: %,d bytes or %.3f mb",
+                  rd.rd_name, (key_blocks + buffers), (key_blocks + buffers / 1048576.));
+  }
 
   /**
    * For each slave, take the Workload generator entries (WG_entry) for an RD
@@ -145,119 +226,176 @@ public class Work extends VdbObject implements Serializable
    */
   private static void prepareWgWork(RD_entry rd, boolean run)
   {
-    int count = 0;
+    int     work_count   = 0;
+    boolean have_streams = false;
+    boolean have_concat  = false;
+    HashMap used_sd_map = new HashMap(16);
 
     /* Set counter telling us how many slaves use each sd: */
-    for (int i = 0; i < Vdbmain.sd_list.size(); i++)
+    SD_entry.clearAllActive();
+    for (SD_entry sd : Vdbmain.sd_list)
     {
-      SD_entry sd = (SD_entry) Vdbmain.sd_list.elementAt(i);
-      sd.setActive(false);
-      sd.format_inserted = false;
+      /* While we're here, initialize some stuff: */
+      sd.format_inserted  = false;
+      sd.pure_rand_seq    = false;
       HashMap slaves_used = new HashMap(32);
 
-      for (int j = 0; j < rd.wgs_for_rd.size(); j++)
+      for (WG_entry wg : Host.getAllWorkloads())
       {
-        WG_entry wg = (WG_entry) rd.wgs_for_rd.elementAt(j);
         if (wg.sd_used == sd)
-          slaves_used.put(wg.slave, null);
+        {
+          slaves_used.put(wg.getSlave(), null);
+
+          /* Keep track of whether an SD is used for mixed random/seq: */
+          if (wg.seekpct == 100 || wg.seekpct <= 0)
+            sd.pure_rand_seq = true;
+
+          if (sd.concatenated_sd)
+            have_concat = true;
+
+          if (rd.rd_stream_count != 0)
+            have_streams = true;
+        }
+      }
+    }
+
+    if (have_streams && have_concat && rd.current_override.getThreads() != For_loop.NOVALUE)
+    {
+      if (!run)
+      {
+        common.ptod("Shared threads requested with SD concatenation SHARES all threads.");
+        common.ptod("The 'streams=' parameter DEDICATES threads.");
+        common.ptod("To resolve this contradiction threads will not be shared "+
+                    "but will be dedicated to each stream.");
       }
     }
 
 
     /* Calculate interarrival times for each WG: */
-    WG_entry.wg_set_interarrival(rd.wgs_for_rd, rd);
+    WG_entry.wg_set_interarrival(Host.getAllWorkloads(), rd);
 
 
     /* Clear 'work' in all slaves: */
-    for (int i = 0; i < SlaveList.getSlaveList().size(); i++)
+    for (Slave slave : SlaveList.getSlaveList())
     {
-      Slave slave = (Slave) SlaveList.getSlaveList().elementAt(i);
       slave.setCurrentWork(null);
-      slave.wgs_for_slave = new Vector(4, 0);
+      //slave.clearWorkloads();
       slave.reads = slave.writes = 0;
     }
 
     /* Give each slave the WG_entry instances they need: */
     int wgs_found = 0;
-    for (int i = 0; i < SlaveList.getSlaveList().size(); i++)
+    for (Slave slave : SlaveList.getSlaveList())
     {
-      Slave slave = (Slave) SlaveList.getSlaveList().elementAt(i);
-
-      for (int j = 0; j < rd.wgs_for_rd.size(); j++)
+      for (WG_entry wg : Host.getAllWorkloads())
       {
-        WG_entry wg = (WG_entry) rd.wgs_for_rd.elementAt(j);
-        if (wg.slave == slave)
+        if (wg.getSlave() == slave)
         {
-          slave.wgs_for_slave.add(wg);
+          //slave.addWorkload(wg, rd);
           wg.wd_used.total_io_done = 0;
           wgs_found++;
 
-          wg.host_lun = unix2Windows(slave.getHost(), wg.host_lun);
+          /* ConcatMarkers may have changed lun name, pick up proper names: */
+          if (wg.sd_used.concatenated_sd)
+          {
+            for (SD_entry sd2 : wg.sd_used.sds_in_concatenation)
+            {
+              sd2.lun = wg.getSlave().getHost().getLunNameForSd(sd2);
 
-          wg.sd_used.setActive(true);
-          wg.slave.addSd(wg.sd_used, wg.host_lun);
+              /* Also keep track of which SD names we used: */
+              used_sd_map.put(sd2, null);
+            }
+          }
+          else
+          {
+            wg.sd_used.setActive();
+            used_sd_map.put(wg.sd_used, null);
+          }
+          //wg.getSlave().addName(wg.sd_used.sd_name);
 
 
-          if (run)
-            common.plog(Format.f("Sending to %-12s ",  wg.slave.getLabel()) +
-                        "wd=" + wg.wd_name +
-                        ",sd=" + wg.sd_used.sd_name + ",lun=" +
-                        slave.getHost().getLunNameForSd(wg.sd_used.sd_name));
+          //if (run)
+          //  common.plog(Format.f("Sending to %-12s ",  wg.slave.getLabel()) +
+          //              "wd=" + wg.wd_name +
+          //              ",sd=" + wg.sd_used.sd_name + ",lun=" +
+          //              slave.getHost().getLunNameForSd(wg.sd_used.sd_name));
 
-          if (rd.rd_name.indexOf(SD_entry.NEW_FILE_FORMAT_NAME) != -1)
+          if (rd.rd_name.startsWith(SD_entry.SD_FORMAT_NAME))
             wg.sd_used.format_inserted = true;
         }
       }
     }
 
-    if (rd.wgs_for_rd.size() != wgs_found)
+
+    if (Dedup.isDedup() && used_sd_map.size() != SD_entry.getRealSds(Vdbmain.sd_list).length)
+      common.failure("rd=%s: All SDs must be used when dedup is active. %d/%d",
+                     rd.rd_name, used_sd_map.size(), Vdbmain.sd_list.size());
+
+    if (Host.getAllWorkloads().size() != wgs_found)
       common.failure("Unmatched WG_entry count: " +
-                     rd.wgs_for_rd.size() + "/" + wgs_found);
+                     Host.getAllWorkloads().size() + "/" + wgs_found);
 
 
     /* Now translate all the WG_entry instances for a slave into Work(): */
-    for (int i = 0; i < SlaveList.getSlaveList().size(); i++)
+    boolean threads_reported = false;
+    for (Slave slave : SlaveList.getSlaveList())
     {
-      Slave slave = (Slave) SlaveList.getSlaveList().elementAt(i);
-
       /* Clear all flags, even for slaves that are not used: */
       slave.setSequentialDone(true);
 
-      if (slave.wgs_for_slave.size() > 0)
+      if (slave.getWorkloads().size() > 0)
       {
         Work work               = new Work();
         work.slave_label        = slave.getLabel();
         work.host_label         = slave.getHost().getLabel();
+        work.luns_on_host       = slave.getHost().getHostLunMap();
         work.rd                 = rd;
         work.work_rd_name       = rd.rd_name;
         work.rd_mount           = rd.rd_mount;
         work.use_waiter         = rd.use_waiter;
-        work.pattern_dir        = DV_map.pattern_dir;
-        work.threads_for_sd     = rd.getThreadMap();
+
+        work.threads_for_slave_map = rd.getThreadsPerSlaveMap();
+        work.threads_from_rd       = 0;
+
+
+        /* Concatenation without streams: equally divvy up the RD requested shared threads: */
+        if (have_concat && !have_streams &&
+            rd.current_override.getThreads() != For_loop.NOVALUE)
+        {
+          work.threads_from_rd = (int) rd.current_override.getThreads() /
+                                 SlaveList.getSlaveList().size();
+          if (!threads_reported && run)
+          {
+            threads_reported = true;
+            common.ptod("SD Concatenation: rd=%s,threads=%d: each slave gets %d threads",
+                        rd.rd_name, (int) rd.current_override.getThreads(),
+                        work.threads_from_rd);
+          }
+        }
+
         work.bucket_types       = BucketRanges.getBucketTypes();
         work.distribution       = rd.distribution;
         work.rd_open_flags      = rd.open_flags;
-        work.wgs_for_slave      = slave.wgs_for_slave;
+        work.wgs_for_slave      = slave.getWorkloads();
         work.validate_options   = Validate.getOptions();
-        work.maximum_xfersize   = SD_entry.getMaxXfersize();
-        Validate.setCompression(rd.compression_rate_to_use);
+        work.pattern_options    = Patterns.getOptions();
+        Validate.setCompressionRatio(rd.compression_ratio_to_use);
+        work.maximum_xfersize   = SD_entry.getAllSdMaxXfersize();
         Validate.setCompSeed(DV_map.compression_seed);
-        work.tape_testing       = SD_entry.isTapeTesting();
-        work.sequential_files   = WG_entry.sequentials_count(slave.wgs_for_slave);
+
+        //if (slave.seq_files_on_slave == 0)
+        work.sequential_files = slave.sequentialFilesOnSlave();
+        //else
+        //  work.sequential_files = slave.seq_files_on_slave;
+
+        work.only_eof_writes    = rd.checkForSequentialWritesOnly();
         work.rd_start_command   = rd.start_cmd;
         work.rd_end_command     = rd.end_cmd;
-        work.oparms             = OracleParms.getParms();
+        work.miscellaneous      = MiscParms.getMiscellaneous();
 
-        if (Vdbmain.isReplay())
-        {
-          work.replay             = true;
-          work.replay_filename    = RD_entry.replay_filename;
-          work.replay_adjust      = ReplayRun.replay_adjust;
-          work.replay_device_list = ReplayDevice.getDeviceList();
-          //work.sequential_files   = ReplayDevice.countUsedDevices();
+        work.replay_info = ReplayInfo.getInfo();
+        if (ReplayInfo.isReplay())
           slave.setSequentialDone(false);
-        }
-
         else
           slave.setSequentialDone(work.sequential_files < 0);
 
@@ -267,15 +405,17 @@ public class Work extends VdbObject implements Serializable
           work.instance_pointers = slave.getHost().getHostInfo().getInstancePointers();
 
         slave.setCurrentWork(work);
-        AllWork.addWork(work);
-        count++;
+        work_count++;
       }
     }
 
 
-    if (count == 0)
+    if (work_count == 0)
       common.failure("prepareWgWork(): no work created for any slave");
 
+
+    if (have_streams && rd.iorate_req != RD_entry.MAX_RATE)
+      common.failure("Use of the streams= parameter requires iorate=max");
   }
 
 
@@ -306,24 +446,43 @@ public class Work extends VdbObject implements Serializable
       slave.setCurrentWork(null);
     }
 
-    /* Go through all anchors: */
+
+    /* Go through all anchors looking for abuse: */
     Vector anchors = FileAnchor.getAnchorList();
+    HashMap <String, String> anchor_name_fsd_map = new HashMap(32);
+    for (FwgEntry fwg : rd.fwgs_for_rd)
+    {
+      String fsdname = anchor_name_fsd_map.get(fwg.anchor.getAnchorName());
+      if (fsdname == null)
+        anchor_name_fsd_map.put(fwg.anchor.getAnchorName(), fwg.fsd_name);
+      else if (!fsdname.equals(fwg.fsd_name))
+      {
+        common.failure("Concurrent use of anchor=%s using multiple FSDs (%s/%s) in one RD is not allowed.",
+                       fwg.anchor.getAnchorName(), fsdname, fwg.fsd_name);
+      }
+    }
+
+
+    /* Go through all anchors: */
+    anchors = FileAnchor.getAnchorList();
+    HashMap used_anchor_map = new HashMap(32);
     for (int i = 0; i < anchors.size(); i++)
     {
       FileAnchor anchor = (FileAnchor) anchors.elementAt(i);
 
-
       for (int j = 99990; j < rd.fwgs_for_rd.size(); j++)
       {
         FwgEntry fwg = (FwgEntry) rd.fwgs_for_rd.elementAt(j);
-        common.ptod("===fwg: " + fwg.getOperation());
+        common.ptod("===fwg: " + fwg.getName() + " " + fwg.fsd_name + " " + fwg.anchor.getAnchorName());
       }
 
       /* Get all the FWG's using this anchor: */
-      Vector fwgs_for_anchor = new Vector(8, 0);
+      Vector <FwgEntry> fwgs_for_anchor = new Vector(8, 0);
       for (int j = 0; j < rd.fwgs_for_rd.size(); j++)
       {
         FwgEntry fwg = (FwgEntry) rd.fwgs_for_rd.elementAt(j);
+        used_anchor_map.put(fwg.anchor, null);
+
         if (fwg.anchor == anchor)
           fwgs_for_anchor.add(fwg);
 
@@ -352,7 +511,7 @@ public class Work extends VdbObject implements Serializable
         String host_name = host_names[h];
 
         /* Go find all the requested slaves for this host: */
-        Vector slaves = new Vector(8, 0);
+        Vector <Slave> slaves = new Vector(8, 0);
         for (int j = 0; j < slave_list.size(); j++)
         {
           Slave slave = (Slave) slave_list.elementAt(j);
@@ -361,22 +520,47 @@ public class Work extends VdbObject implements Serializable
         }
 
         /* Find the slave with the least amount of work: */
-        Slave least = (Slave) slaves.firstElement();
+        Slave slave_to_use = (Slave) slaves.firstElement();
         for (int j = 0; j < slaves.size(); j++)
         {
           Slave slave = (Slave) slaves.elementAt(j);
-          if (slave.getCurrentFwgWorkSize() < least.getCurrentFwgWorkSize())
-            least = slave;
+          if (slave.getCurrentFwgWorkSize() < slave_to_use.getCurrentFwgWorkSize())
+            slave_to_use = slave;
         }
+
+        /* We now have the slave we think we want, but DV requires us */
+        /* to keep the FSD on the same slave:                         */
+        if (Validate.isRealValidate())
+        {
+          for (Slave slave : slaves)
+          {
+            for (String anchor_name : slave.getNamesUsedList())
+            {
+              if (anchor.getAnchorName().equals(anchor_name))
+                slave_to_use = slave;
+            }
+          }
+        }
+
+        /* Remember which anchors go to this slave: */
+        for (FwgEntry fwg : fwgs_for_anchor)
+          slave_to_use.addName(fwg.anchor.getAnchorName());
 
         /* That one gets the new work.                           */
         /* Create a new Work() instance or add them to existing: */
-        SlaveList.AddFwgsToSlave(least, fwgs_for_anchor, rd, run);
+        SlaveList.AddFwgsToSlave(slave_to_use, fwgs_for_anchor, rd, run);
       }
     }
 
     /* Change the fwd_rate from TOTAL to 'per slave': */
     SlaveList.adjustSkew();
+
+    if (Dedup.isDedup() && used_anchor_map.size() != anchors.size())
+      common.failure("All anchors must be used when dedup is active.");
+
+    // FwgRun.calcSkew(fwgs_for_rd);
+    if (Dedup.isDedup())
+      Dedup.adjustFsdDedupValues(rd.fwgs_for_rd);
   }
 
 
@@ -395,47 +579,48 @@ public class Work extends VdbObject implements Serializable
   /**
    * Return a list of SDs used for this Work() instance for a slave or for a host.
    */
-  public String[] getSdList()
+  public SD_entry[] getSdList()
   {
-    return(String[]) getSdMap().keySet().toArray(new String[0]);
+    return(SD_entry[]) getSdMap().values().toArray(new SD_entry[0]);
   }
-  public HashMap getSdMap()
+
+  private HashMap <String, SD_entry> getSdMap()
   {
-    HashMap sds = new HashMap(32);
+    HashMap <String, SD_entry> map = new HashMap(32);
 
     for (int i = 0; i < wgs_for_slave.size(); i++)
     {
-      WG_entry wg = (WG_entry) wgs_for_slave.elementAt(i);
-      sds.put(wg.sd_used.sd_name, null);
+      WG_entry wg = (WG_entry) wgs_for_slave.get(i);
+      map.putAll(wg.getRealSdMap());
     }
 
-    return sds;
+    return map;
   }
 
 
   /**
    * Create a HashMap of all SDs used in a Work instance.
    */
-  private HashMap getSdMap(Slave slave)
+  private HashMap <String, SD_entry> getSlaveSdMap(Slave slave)
   {
-    HashMap sds = new HashMap(32);
+    HashMap <String, SD_entry> map = new HashMap(32);
 
     for (int i = 0; i < wgs_for_slave.size(); i++)
     {
-      WG_entry wg = (WG_entry) wgs_for_slave.elementAt(i);
-      if (wg.slave.getLabel().equals(slave.getLabel()))
-        sds.put(wg.sd_used.sd_name, null);
+      WG_entry wg = (WG_entry) wgs_for_slave.get(i);
+      if (wg.getSlave().getLabel().equals(slave.getLabel()))
+        map.putAll(wg.getRealSdMap());
     }
 
-    return sds;
+    return map;
   }
 
   /**
    * Return an array of sd names used in the current run by all slaves.
    */
-  public static String[] getSdsForRun()
+  public static SD_entry[] getSdsForRun()
   {
-    HashMap sds = new HashMap(32);
+    HashMap <String, SD_entry> sds = new HashMap(32);
 
     for (int i = 0; i < SlaveList.getSlaveList().size(); i++)
     {
@@ -443,17 +628,21 @@ public class Work extends VdbObject implements Serializable
       Work work = slave.getCurrentWork();
       if (work == null)
         continue;
-      sds.putAll(work.getSdMap(slave));
+      sds.putAll(work.getSlaveSdMap(slave));
     }
 
-    return(String[]) sds.keySet().toArray(new String[0]);
+    SD_entry[] ret = (SD_entry[]) sds.values().toArray(new SD_entry[0]);
+    //for (int i = 0; i < ret.length; i++)
+    //  common.ptod("getSdsForRun: " + ret[i].sd_name);
+
+    return ret;
   }
 
 
   /**
    * Return an array of sd names used in the current run by a specific host
    */
-  public static String[] getSdsForRun(Host host)
+  public static SD_entry[] getHostSdsForRun(Host host)
   {
     HashMap sds = new HashMap(32);
 
@@ -463,10 +652,11 @@ public class Work extends VdbObject implements Serializable
       Work work = slave.getCurrentWork();
       if (work == null)
         continue;
-      sds.putAll(work.getSdMap(slave));
+
+      sds.putAll(work.getSlaveSdMap(slave));
     }
 
-    return(String[]) sds.keySet().toArray(new String[0]);
+    return(SD_entry[]) sds.values().toArray(new SD_entry[0]);
   }
 
 
@@ -492,20 +682,35 @@ public class Work extends VdbObject implements Serializable
     String newname = common.replace_string(name, parms[0], parms[1]);
     return newname;
   }
+
   /**
-   * Get the amount of threads that we must use for an SD.
+   * Get the amount of threads that we must use for an SD or WD.
    */
-  public int getThreadsUsed(SD_entry sd)
+  public int getThreadsForSlave(String sd_name)
   {
-    String key = sd.sd_name + "/" + SlaveJvm.getSlaveLabel();
-    Integer count = (Integer) threads_for_sd.get(key);
-    if (count == null)
+    String key     = sd_name + "/" + SlaveJvm.getSlaveLabel();
+    ArrayList list = threads_for_slave_map.get(key);
+    if (list == null)
     {
-      String[] keys = (String[]) threads_for_sd.keySet().toArray(new String[0]);
-      for (int i = 0; i < keys.length; i++)
-        common.ptod("keys: " + keys[i]);
-      common.failure("Thread count requested for unknown slave: " + key);
+      common.ptod("Requesting unknown thread count for '%s'", key);
+      return 0;
     }
-    return count.intValue();
+
+    return list.size();
+  }
+
+
+  /**
+   * Get the stream context for an SD and it's relative IO_task() thread.
+   * The stream context will be 'null' for those runs that do not use streams.
+   */
+  public StreamContext getStreamForSlave(String sd_name, int rel_thread)
+  {
+    String key = sd_name + "/" + SlaveJvm.getSlaveLabel();
+    ArrayList <StreamContext> list = threads_for_slave_map.get(key);
+    if (list == null)
+      common.failure("Requesting unknown thread count for '%'", key);
+
+    return list.get(rel_thread);
   }
 }

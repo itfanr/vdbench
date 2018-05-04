@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -36,9 +18,8 @@ import java.io.*;
  */
 class FsdEntry implements Cloneable
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
-
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   public  String    name        = null;;
 
@@ -46,12 +27,11 @@ class FsdEntry implements Cloneable
 
   public FileAnchor anchor      = null;
   public String     dirname     = null;
-  public String     jnl_file_name = null;
+  public String     jnl_dir_name = null;
 
   public int        width       = 1;
   public int        depth       = 1;
   public int        files       = 10;
-  public long       total_size  = Long.MAX_VALUE;
   public String     dist        = "bottom";
 
   public boolean    cleanup_old = false;
@@ -61,12 +41,19 @@ class FsdEntry implements Cloneable
   public int        fsdcount = 0;        /* How often to repeat the last FSD  */
   public int        fsdstart = 0;        /* With what to start counting       */
 
-  public long       working_set = 0;
-  public boolean    shared = false;
+  public long       working_set       = 0;
 
+  public long       total_size       = Long.MAX_VALUE;
+
+  public boolean    shared        = false;
+  public boolean    create_rw_log = false;
+
+  public Dedup      dedup         = null;
+
+  public static     int    max_fsd_name = 0;
 
   private static    Vector fsd_list = new Vector(16);
-  private static    FsdEntry dflt       = new FsdEntry();
+  private static    FsdEntry dflt   = new FsdEntry();
 
 
   public Object clone()
@@ -76,6 +63,8 @@ class FsdEntry implements Cloneable
       FsdEntry fsd   = (FsdEntry)  super.clone();
       fsd.filesizes  = (double[])  filesizes.clone();
       fsd.open_flags = (OpenFlags) open_flags.clone();
+      if (dedup != null)
+        fsd.dedup      = (Dedup)     dedup.clone();
 
       return fsd;
     }
@@ -86,7 +75,7 @@ class FsdEntry implements Cloneable
     return null;
   }
 
-  public static Vector getFsdList()
+  public static Vector <FsdEntry> getFsdList()
   {
     return fsd_list;
   }
@@ -149,10 +138,12 @@ class FsdEntry implements Cloneable
             fsd.name = prm.alphas[0];
             fsd_list.addElement(fsd);
 
+            max_fsd_name = Math.max(max_fsd_name, fsd.name.length());
+
             if (Vdbmain.sd_list.size() > 0)
               common.ptod("'fsd' and 'sd' parameters are mutually exclusive");
 
-            if (Validate.isValidate() && fsd.name.length() > 8)
+            if (Validate.isRealValidate() && fsd.name.length() > 8)
               common.failure("For Data Validation an FSD name may be only 8 " +
                              "characters or less: " + fsd.name);
           }
@@ -163,7 +154,7 @@ class FsdEntry implements Cloneable
           fsd.dirname = prm.alphas[0];
 
         else if ("journal".startsWith(prm.keyword))
-          fsd.jnl_file_name = prm.alphas[0];
+          fsd.jnl_dir_name = prm.alphas[0];
 
         else if ("host".startsWith(prm.keyword) || prm.keyword.equals("hd"))
           common.failure("No 'host=' parameter is allowed for a File System Definition (FSD)\n" +
@@ -178,17 +169,30 @@ class FsdEntry implements Cloneable
           fsd.depth = (int) prm.numerics[0];
 
         else if ("sizes".startsWith(prm.keyword))
+        {
           fsd.filesizes = prm.numerics;
+          if (prm.num_count == 0)
+            common.failure("No NUMERIC parameters specified for 'sizes='");
+          //if (Validate.isDedup() && prm.num_count > 1)
+          //  common.failure("Variable file sizes not allowed with Dedup until further notice.");
+        }
 
         else if ("shared".startsWith(prm.keyword))
           fsd.shared = prm.alphas[0].toLowerCase().startsWith("y");
 
         else if ("wss".startsWith(prm.keyword) || "workingsetsize".startsWith(prm.keyword))
+        {
           fsd.working_set = (long) prm.numerics[0];
+          if (prm.num_count > 1)
+            fsd.working_set /= (long) prm.numerics[1];
+        }
+
 
         else if ("total_size".startsWith(prm.keyword) || "totalsize".startsWith(prm.keyword))
         {
           fsd.total_size = (long) prm.numerics[0];
+          if (prm.num_count > 1)
+            fsd.total_size /= (long) prm.numerics[1];
           if (fsd.total_size < 0)
             common.failure("A percentage value as a 'totalsize=' parameter is NOT " +
                            "allowed for an FSD; only for an RD.");
@@ -213,7 +217,10 @@ class FsdEntry implements Cloneable
         }
 
         else if ("openflags".startsWith(prm.keyword))
-          fsd.open_flags = new OpenFlags(prm.alphas);
+          fsd.open_flags = new OpenFlags(prm.alphas, prm.numerics);
+
+        else if (prm.keyword.equals("log"))
+          fsd.create_rw_log = prm.alphas[0].toLowerCase().startsWith("y");
 
         else if ("count".startsWith(prm.keyword))
         {
@@ -229,6 +236,15 @@ class FsdEntry implements Cloneable
           }
         }
 
+        // I am reading here that if there is no default dedup it is technically
+        // possible for some FSDs to ask for NO Dedup while others run WITH?
+
+        // shortcut: no support yet for variable Dedup
+        else if (prm.keyword.startsWith("dedup"))
+        {
+          common.failure("FSD specific dedup parameters: some time in the future");
+          //fsd.dedup.parseDedupParms(prm);
+        }
 
         else
           common.failure("Unknown keyword: " + prm.keyword);
@@ -255,6 +271,7 @@ class FsdEntry implements Cloneable
     checkJournals();
     handleFsdCount(fsd_list);
     //checkAnchorDirectories();
+    Dedup.checkFsdDedup();
     finalizeSetup();
 
     return str;
@@ -275,9 +292,13 @@ class FsdEntry implements Cloneable
     }
 
     /* Directories may not be parents or children of each other: */
+    int logs_requested = 0;
     for (int i = 0; i < fsd_list.size(); i++)
     {
       FsdEntry fsd = (FsdEntry) fsd_list.elementAt(i);
+
+      if (fsd.create_rw_log)
+        logs_requested++;
 
       for (int j = i+1; j < fsd_list.size(); j++)
       {
@@ -304,6 +325,13 @@ class FsdEntry implements Cloneable
     }
 
 
+    if (common.get_debug(common.CREATE_READ_WRITE_LOG) && logs_requested == 0)
+      common.failure("Requesting read/write log, but no 'log=yes' found as FSD parameter");
+    if (common.get_debug(common.CREATE_READ_WRITE_LOG) && !Validate.isRealValidate())
+      common.failure("Requesting read/write log, but not using Data Validation");
+
+
+
     /* Check file size parameters: */
     for (int i = 0; i < fsd_list.size(); i++)
     {
@@ -319,6 +347,14 @@ class FsdEntry implements Cloneable
 
       if (fsd.files <= 0)
         common.failure("'files=' parameter must be greater than zero");
+
+      /* Too many problems, like 'ls' failing with 'Not enough space', */
+      /* but also problems in java LISTING those directories: */
+      if (fsd.files > 10000000 && fsd.files % 1000000 != 777)
+      {
+        common.failure("'anchor=%s,files=%d' File count is limited to 10 million "+
+                       "in a single directory.", fsd.dirname, fsd.files);
+      }
 
       if (fsd.filesizes.length == 1)
         continue;
@@ -336,7 +372,11 @@ class FsdEntry implements Cloneable
 
       double total = 0;
       for (int j = 0; j < fsd.filesizes.length; j+=2)
+      {
+        /* Correct some possible fractions used, e.g. 6.6m: */
+        fsd.filesizes[j] = (long) fsd.filesizes[j];
         total += fsd.filesizes[j+1];
+      }
 
       if ((int) total != 100)
       {
@@ -359,17 +399,17 @@ class FsdEntry implements Cloneable
     {
       FsdEntry fsd = (FsdEntry) fsd_list.elementAt(i);
       //common.ptod("fsd.jnl_file_name: " + fsd.jnl_file_name);
-      if (!Jnl_entry.isRawJournal(fsd.jnl_file_name))
+      if (!Jnl_entry.isRawJournal(fsd.jnl_dir_name))
         continue;
 
       for (int j = i; j < fsd_list.size(); j++)
       {
         FsdEntry fsd1 = (FsdEntry) fsd_list.elementAt(j);
-        if (!Jnl_entry.isRawJournal(fsd1.jnl_file_name))
+        if (!Jnl_entry.isRawJournal(fsd1.jnl_dir_name))
           continue;
-        if (fsd1.jnl_file_name.equals(fsd.jnl_file_name))
+        if (fsd1.jnl_dir_name.equals(fsd.jnl_dir_name))
           common.failure("When using a raw device for journaling every FSD needs "+
-                         "his own raw journal device: journal=" + fsd.jnl_file_name);
+                         "his own raw journal device: journal=" + fsd.jnl_dir_name);
       }
     }
   }
@@ -445,6 +485,7 @@ class FsdEntry implements Cloneable
 
           fsd2.fsdcount = 0;
           fsd_list.add(fsd2);
+          max_fsd_name = Math.max(max_fsd_name, fsd2.name.length());
           found = true;
           common.plog("'fsd=" + fsd.name +
                       ",count=(start,count)' added " + fsd2.name + " " +
@@ -482,5 +523,86 @@ class FsdEntry implements Cloneable
 
     common.failure("fsd=" + name + " not found");
     return null;
+  }
+}
+
+
+/**
+ * Sort Fsds by name, allowing correct order for fsd1 and fsd12. Can use either
+ * a String as input, or FsdEntry.
+ */
+class FsdSort implements Comparator
+{
+  private static int bad_sds = 0;
+  public int compare(Object o1, Object o2)
+  {
+    String sd1;
+    String sd2;
+
+    /* We can handle both SDs and Strings: */
+    if (o1 instanceof FsdEntry)
+    {
+      sd1 = ((FsdEntry) o1).name;
+      sd2 = ((FsdEntry) o2).name;
+    }
+    else
+    {
+      sd1 = (String) o1;
+      sd2 = (String) o2;
+    }
+
+    /* Get everything until we hit a numeric: */
+    String char1 = getLetters(sd1);
+    String char2 = getLetters(sd2);
+
+    /* If these pieces don't match, just do alpha compare: */
+    if (!char1.equalsIgnoreCase(char2))
+      return sd1.compareToIgnoreCase(sd2);
+
+    String r1 = null;
+    String r2 = null;
+    try
+    {
+      /* Get the remainder (numeric?) portion of both values: */
+      r1 = sd1.substring(char1.length());
+      r2 = sd2.substring(char2.length());
+
+      /* If the results is not numberic, again do alpha compare: */
+      if (!common.isNumeric(r1) || !common.isNumeric(r1))
+        return sd1.compareToIgnoreCase(sd2);
+
+      /* Just subtract these numbers and return: */
+      int num1 = Integer.parseInt(r1);
+      int num2 = Integer.parseInt(r2);
+      return num1 - num2;
+    }
+
+    /* Any problem, report five of them: */
+    catch (Exception e)
+    {
+      if (bad_sds++ < 5)
+      {
+        common.ptod("r1: char1: %s char2: %s sd1: %s sd2: %s r1: %s r2: %s",
+                    char1, char2, sd1, sd2, r1, r2);
+        common.ptod(e);
+      }
+    }
+
+    /* Anything down here: just do an alpha compare: */
+    return sd1.compareToIgnoreCase(sd2);
+  }
+
+  private String getLetters(String sd)
+  {
+    String char1 = "";
+    for (int i = 0; i < sd.length(); i++)
+    {
+      char ch = sd.charAt(i);
+      if (!Character.isLetter(ch))
+        break;
+      char1 += new Character(ch).toString();
+    }
+
+    return char1;
   }
 }

@@ -1,30 +1,12 @@
 package Vdb;
-
-/*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
- */
-
-
-/*
- * Author: Henk Vandenbergh.
- */
+    
+/*  
+ * Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved. 
+ */ 
+    
+/*  
+ * Author: Henk Vandenbergh. 
+ */ 
 
 import java.util.*;
 import java.net.*;
@@ -33,14 +15,13 @@ import Utils.ClassPath;
 import Utils.Fget;
 
 /**
- * Remote Shell deamon for vdbench.
+ * Remote Shell daemon for vdbench.
  * See notes under Rsh().
  */
 class RshDeamon
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
-
+  private final static String c = 
+  "Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved."; 
 
   public static void waitForUsers()
   {
@@ -65,7 +46,7 @@ class RshDeamon
     {
       /* Every x seconds tell user we're still waiting: */
       if ( (signaltod = common.signal_caller(signaltod, 300 * 1000)) == 0)
-        common.ptod("Vdbench rsh deamon: waiting for new users");
+        common.ptod("Vdbench rsh daemon: waiting for new users");
 
       try
       {
@@ -83,7 +64,7 @@ class RshDeamon
       {
         if (RshUser.active_commands.size() > 0)
         {
-          common.ptod("waiting for new RshDeamon request. Current active requests:");
+          common.ptod("waiting for new Rshdaemon request. Current active requests:");
           for (int i = 0; i < RshUser.active_commands.size(); i++)
             common.ptod((String) RshUser.active_commands.elementAt(i));
         }
@@ -114,7 +95,7 @@ class RshDeamon
       {
         String line = (String) lines.elementAt(i);
         line = line.trim().toLowerCase();
-        if (line.startsWith("rshdeamonport="))
+        if (line.startsWith("rshdaemonport="))
         {
           try
           {
@@ -122,7 +103,7 @@ class RshDeamon
           }
           catch (Exception e)
           {
-            common.ptod("Error parsing 'rshdeamonport=': " + line);
+            common.ptod("Error parsing 'rshdaemonport=': " + line);
           }
         }
 
@@ -145,14 +126,14 @@ class RshDeamon
         SlaveSocket.setMasterPort(master_port);
     }
 
-    //common.ptod("rshdeamonport: " + SlaveSocket.getRemotePort());
+    //common.ptod("rshdaemonport: " + SlaveSocket.getRemotePort());
     //common.ptod("masterslaveport: " + SlaveSocket.getMastersh_port());
 
     if (SlaveSocket.getRemotePort() == SlaveSocket.getMasterPort())
     {
-      common.ptod("rshdeamonport: " + SlaveSocket.getRemotePort());
+      common.ptod("rshdaemonport: " + SlaveSocket.getRemotePort());
       common.ptod("masterslaveport: " + SlaveSocket.getMasterPort());
-      common.failure("rshdeamonport and masterslaveport must have different port numbers");
+      common.failure("rshdaemonport and masterslaveport must have different port numbers");
     }
   }
 

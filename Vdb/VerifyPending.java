@@ -1,32 +1,16 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Vector;
 
 import Utils.Format;
@@ -36,154 +20,124 @@ import Utils.printf;
 /**
  * Verify the contents of those writes that were pending during the shutdown of
  * the run that created the journal file.
- * This is for raw functionality only.
+ * This is for both raw and file system functionality.
+ *
+ * Note 07/01/15:
+ * Since this code currently is not Dedup aware shall I just postpone the
+ * reading of these pending blocks until the normal journal recovery sequential
+ * reads and THEN deal with them?
+ * At that point, do not call the JNI DV read, but a normal read.
+ * I still have the problem even then though that I can not use keys to validate
+ * each sector of a block.
+ *
+ * Maybe call DV Jni code with an extra flag to NOT report a corruption and then
+ * call it twice with the before and then the after key and then if there is an
+ * error with BOTH call it a corruption?
+ *
+ * The issue then is: a 1024k write can that technically end up being split,
+ * half AFTER, half BEFORE?
+ * And, since I no longer have keys, can I even figure that out?
+ *
+ * Still thinking.
  */
 public class VerifyPending
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
-
-
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   /**
-   * Look through the recovered DV map and find out which blocks had a wrete
+   * Look through the recovered DV map and find out which blocks had a write
    * pending.
    */
-  public static void findPendingBlocks(DV_map before_map, DV_map new_map, SD_entry sd)
+  public static void findPendingBlocks(DV_map before_map, DV_map new_map, String type, String which)
   {
-    /* The before_map table contains all entries that were in  progress,      */
-    /* and will have the key of the block that we were trying to write.       */
-    /* We will allocate an array containing the lbas that have an io pending. */
-    int lba_entries_needed = 0;
-    for (int j = 0; j < new_map.byte_map.length; j++)
+    Elapsed elapsed = new Elapsed("findPendingBlocks", 100*1000*1000);
+
+
+    /* Create the pending list, later to be array: */
+    ArrayList <Long> lba_list  = new ArrayList(1024);
+    ArrayList <Byte> flag_list = new ArrayList(1024);
+    int blksize                = new_map.getKeyBlockSize();
+    boolean first              = true;
+    for (long j = 0; j < new_map.key_blocks; j++)
     {
-      int key = before_map.dv_get((long) j * new_map.getBlockSize());
-      if (key != 0)
-        lba_entries_needed++;
+      long lba  = j * blksize;
+      int  flag = before_map.dv_get_nolock(lba);
+
+      elapsed.track();
+
+      if (flag != 0)
+      {
+        if (first)
+        {
+          first = false;
+          ErrorLog.plog("");
+          ErrorLog.plog("Note that i/o still pending at the end of the previous "+
+                        "run's NORMAL completion may be included here.");
+          ErrorLog.plog("");
+        }
+
+        if (flag == DV_map.PENDING_KEY_0)
+        {
+          ErrorLog.plog("I/O pending for key block at lba 0x%08x flag 0x%02x key 0x%02x. "+
+                        "This was the block's first write. Block marked 'unknown'.",
+                        lba, flag, new_map.dv_get(lba));
+          new_map.dv_set(lba, 0);
+          continue;
+        }
+
+        ErrorLog.plog("I/O pending for key block at lba 0x%08x flag 0x%02x key 0x%02x",
+                      lba, flag, new_map.dv_get(lba));
+
+        lba_list.add(lba);
+        flag_list.add((byte) flag);
+        if (lba_list.size() > Integer.MAX_VALUE - 1)
+          common.failure("Too many (%,d) pending key blocks", lba_list.size());
+
+      }
     }
 
-    /* Create the lba array: */
-    before_map.pending_write_lbas = new long[lba_entries_needed];
-    int index = 0;
-    for (int j = 0; j < new_map.byte_map.length; j++)
-    {
-      long lba = (long) j * new_map.getBlockSize();
-      int key = before_map.dv_get(lba);
+    ErrorLog.plog("%s=%s %,d pending writes found in this journal need to be checked.",
+                  type, which, lba_list.size());
+    if (which == null)
+      common.failure("Unknown SD or FSD name");
 
-      if (key != 0)
-        before_map.pending_write_lbas[index++] = lba;
+
+
+    if (Validate.ignorePending())
+    {
+      before_map.pending_write_lbas  = new long[0];
+      before_map.pending_write_flags = new byte[0];
+      ErrorLog.plog("User opted to ignore all pending writes. Data contents set to 'unknown'");
+
+      for (int i = 0; i < lba_list.size(); i++)
+        new_map.dv_set(lba_list.get(i), 0x00);
+
+      elapsed.end(5);
+      return;
     }
 
-    log("There were " + lba_entries_needed + " pending writes " +
-        "found in this journal");
-  }
+    before_map.pending_write_lbas  = new long[lba_list.size()];
+    before_map.pending_write_flags = new byte[lba_list.size()];
 
-
-  /**
-   * Check the pending blocks for this SD_entry.
-   */
-  public static void checkSdPendingBlocks(DV_map   before_map,
-                                          DV_map   new_map,
-                                          SD_entry sd)
-  {
-    printf pf;
-
-    /* Check all pending writes to see what the current status is: */
-    log("Journal recovery complete for sd=" + sd.sd_name + ",lun=" + sd.lun);
-
-    if (before_map.pending_write_lbas.length > 0)
+    for (int i = 0; i < lba_list.size(); i++)
     {
-      log("The following lbas had a write operation in progress " +
-          "at the end of the previous Vdbench run.");
-      log("The I/O completion status is being checked.");
-      log("");
+      before_map.pending_write_lbas  [ i ] = lba_list.get(i);
+      before_map.pending_write_flags [ i ] = flag_list.get(i);
     }
 
-    /* Now read and check all the pending blocks: */
+
+    /* Translate this into a hash map: */
+    before_map.pending_map = new HashMap(before_map.pending_write_lbas.length);
     for (int i = 0; i < before_map.pending_write_lbas.length; i++)
     {
-      long lba       = before_map.pending_write_lbas[i];
-      int before_key = before_map.dv_get(lba);
-
-      /* If the before key was marked 'error' it means the block had */
-      /* never been written and therefore should be set to zero:    */
-      if (before_key == DV_map.DV_ERROR)
-        before_key = 0;
-
-      int after_key  = DV_map.dv_increment(before_key);
-
-      int before_keys = checkSdKeys(sd, lba, new_map.getBlockSize(), before_key);
-      int after_keys  = checkSdKeys(sd, lba, new_map.getBlockSize(), after_key);
-      int sectors     = new_map.getBlockSize() / 512;
-
-      /* Decide on the status of this block: */
-      compareKeyCounts(new_map, before_key, before_keys,
-                       after_key, after_keys, sectors, lba);
-    }
-  }
-
-
-  /**
-   * We have read the block and counted the key values.
-   * Report the status and/or discrepancies.
-   *
-   */
-  private static void compareKeyCounts(DV_map new_map,
-                                       int    before_key,
-                                       int    before_keys,
-                                       int    after_key,
-                                       int    after_keys,
-                                       int    sectors,
-                                       long   lba)
-  {
-    printf pf;
-
-    /* If the key is what we expect, hurray. It means that the block */
-    /* indeed has been written. new_map already contains that key    */
-    if (after_keys == sectors)
-    {
-      pf = new printf("VerifyPending(): lba 0x%012X contains " +
-                      "%d 'after' 0x%02x keys. Keys are valid.");
-      pf.add(lba);
-      pf.add(after_keys);
-      pf.add(after_key);
-      log(pf.print());
+      //common.ptod("pending_map: 0x%08x %02x", before_map.pending_write_lbas[i],
+      //                                        before_map.pending_write_flags[i]);
+      before_map.pending_map.put(before_map.pending_write_lbas[i],
+                                 before_map.pending_write_flags[i]);
     }
 
-    /* If the key is the previous key, it means that the write did NOT */
-    /* complete. We need to reset the key value:                       */
-    else if (before_keys == sectors)
-    {
-      pf = new printf("VerifyPending(): lba 0x%012X contains " +
-                      "%d 'before' 0x%02x keys. Keys are valid.");
-      pf.add(lba);
-      pf.add(before_keys);
-      pf.add(before_key);
-      log(pf.print());
-      new_map.dv_set(lba, before_key);
-    }
-
-    else
-    {
-      pf = new printf("VerifyPending(): lba 0x%012X contains " +
-                      "%d 'before' 0x%02x keys: and %d 'after' 0x%02x keys " +
-                      "and %d 'other' keys. Block is invalid.");
-      pf.add(lba);
-      pf.add(before_keys);
-      pf.add(before_key);
-      pf.add(after_keys);
-      pf.add(after_key);
-      pf.add(sectors - before_keys - after_keys);
-
-      /* For a quick fix, mark a hald-done block 'in error' until I write code to */
-      /* handle in BadSector() the fact that we CAN have half blocks.             */
-      new_map.dv_set(lba, DV_map.DV_ERROR);
-
-      log(pf.print());
-      //log("VerifyPending(): This block will be called out later by Data Validation.");
-      log("VerifyPending(): This block will be bypassed from further validation ");
-      log("                 until code is written to handle 'half good / half bad' blocks. ");
-    }
+    elapsed.end(5);
   }
 
 
@@ -192,8 +146,7 @@ public class VerifyPending
    * Check the pending blocks for any file that owns one of these pending blocks.
    */
   public static void checkFsdPendingBlocks(FileAnchor anchor,
-                                           DV_map     before_map,
-                                           DV_map     new_map)
+                                           DV_map     before_map)
   {
     /* If nothing's pending, that's just too easy: */
     if (before_map.pending_write_lbas.length == 0)
@@ -217,146 +170,57 @@ public class VerifyPending
       if (before_map.pending_write_lbas[lba_index] >= end_lba)
         continue ;
 
-      /* I have now the file that this lba belongs to. Read it: */
-      lba_index = checkKeyValueForFile(before_map, new_map, fe, lba_index);
+      lba_index = checkKeyValuesForFile(before_map, fe, lba_index);
     }
-
-    if (blocks_read != before_map.pending_write_lbas.length)
-      common.failure("Error: not all 'pending write' blocks were read and checked: " +
-                     before_map.pending_write_lbas.length + "/" + blocks_read);
   }
 
 
 
   /**
-   * Read a block from the file where the 'pending write' block belongs.
+   * We now have a file that has pending key blocks. Add all it's keyblocks to a
+   * map for this file.
+   *
+   * I could have stored the hashmap in the FileEntry, but I did not want to add
+   * an other 8 bytes minimum to the size of FileEntry.
    */
-  private static int blocks_read = 0;
-  private static int checkKeyValueForFile(DV_map before_map, DV_map new_map,
-                                          FileEntry fe,     int lba_index)
+  private static int checkKeyValuesForFile(DV_map    before_map,
+                                           FileEntry fe,
+                                           int       lba_index)
   {
-    int  xfersize  = before_map.getBlockSize();
-    long start_lba = fe.getFileStartLba();
-    long end_lba   = start_lba + fe.getCurrentSize();
+    /* if this is the first pending key block create the anchor map and array: */
+    FileAnchor anchor = fe.getAnchor();
+    if (anchor.pending_file_lba_map == null)
+    {
+      anchor.pending_file_lba_map = new HashMap(8);
+      anchor.pending_files    = new ArrayList(8);
+    }
 
-    /* Read all blocks for this file: */
+    /* This is a new file: create the HashMap and store it in the anchor: */
+    HashMap <Long, Long> pending_lbas = new HashMap(8);
+    if (anchor.pending_file_lba_map.put(fe, pending_lbas) != null)
+      common.failure("Duplicate pending file name: " + fe.getShortName());
+    anchor.pending_files.add(fe);
+
+
+    /* Get all pending key blocks for this file: */
     for (; lba_index < before_map.pending_write_lbas.length; lba_index++)
     {
-      long check_lba = before_map.pending_write_lbas[lba_index];
-      long file_lba  = check_lba - fe.getFileStartLba();
+      long key_lba   = before_map.pending_write_lbas[lba_index];
+      long file_lba  = key_lba - fe.getFileStartLba();
 
       /* If the next lba to be checked is outside of this file, stop: */
       if (file_lba >= fe.getCurrentSize())
         break;
 
-      int before_key = before_map.dv_get(check_lba);
+      /* Add the pending write for this key block to this file: */
+      if (pending_lbas.put(file_lba, file_lba) != null)
+        common.failure("Duplicate pending lba found: " + file_lba);
 
-      /* If the before key was marked 'error' it means the block had */
-      /* never been written and therefore should be set to zero:    */
-      if (before_key == DV_map.DV_ERROR)
-        before_key = 0;
-
-      int after_key   = DV_map.dv_increment(before_key);
-      blocks_read++;
-      int before_keys = checkFsdKeys(fe, file_lba, xfersize, before_key);
-      int after_keys  = checkFsdKeys(fe, file_lba, xfersize, after_key);
-      int sectors     = xfersize / 512;
-
-      /* Decide on the status of this block: */
-      compareKeyCounts(new_map, before_key, before_keys,
-                       after_key, after_keys, sectors, check_lba);
+      ErrorLog.plog("Pending write found to file %s, file lba 0x%08x", fe.getFullName(), file_lba);
     }
 
     return lba_index;
   }
-
-  /**
-   * Open the file and then have the contents of the block checked.
-   */
-  private static int checkSdKeys(SD_entry sd, long lba, int xfersize, int expected_key)
-  {
-    long handle = Native.openFile(sd.lun);
-    if (handle < 0)
-      common.failure("Unable to open lun=" + sd.lun);
-    File_handles.addHandle(handle, sd);
-
-    int valid_keys = countKeys(handle, lba, xfersize, expected_key);
-    if (valid_keys < 0)
-      common.failure("VerifyPending(): Unable to read lba " + lba + "for lun=" + sd.lun);
-
-    Native.closeFile(handle);
-    File_handles.remove(handle);
-
-    return valid_keys;
-  }
-
-
-
-
-  /**
-   * Open the file and then have the contents of the block checked.
-   */
-  private static int checkFsdKeys(FileEntry fe, long lba, int xfersize, int expected_key)
-  {
-    long handle = Native.openFile(fe.getName());
-    if (handle < 0)
-      common.failure("Unable to open lun=" + fe.getName());
-    File_handles.addHandle(handle, fe.getName());
-
-    int valid_keys = countKeys(handle, lba, xfersize, expected_key);
-    if (valid_keys < 0)
-      common.failure("VerifyPending(): Unable to read lba " + lba + "for file=" + fe.getName());
-
-    Native.closeFile(handle);
-    File_handles.remove(handle);
-
-    return valid_keys;
-  }
-
-
-
-  /**
-   * Read a block and count the amount of valid keys in the sectors of that block
-   */
-  private static int countKeys(long handle, long lba, int xfersize, int expected_key)
-  {
-    int sectors = xfersize / 512;
-    int valid_keys = 0;
-
-    int[] data_array  = new int[ xfersize / 4];
-    long  data_buffer = Native.allocBuffer(xfersize);
-
-    if (Native.readFile(handle, lba, xfersize, data_buffer) != 0)
-      return -1;
-
-    Native.buffer_to_array(data_array, data_buffer, xfersize);
-
-    for (int i = 0; i < sectors; i++)
-    {
-      int offset = (i*128);
-      int current_key = data_array[offset+4] >> 24;
-
-      if (current_key == expected_key)
-        valid_keys++;
-    }
-
-    Native.freeBuffer(xfersize, data_buffer);
-
-    return valid_keys;
-  }
-
-
-  private static void log(String txt)
-  {
-    String rd = "rd=" + SlaveWorker.work.work_rd_name;
-    ErrorLog.sendMessageToLog(rd + ": " + txt);
-  }
-
-  private static void log(String format, Object ... args)
-  {
-    log(String.format(format, args));
-  }
-
 }
 
 

@@ -1,32 +1,15 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
 
 import java.io.*;
+import java.util.ArrayList;
 import java.util.Vector;
 
 import Utils.Fget;
@@ -40,23 +23,35 @@ import Utils.OS_cmd;
 
 class Adm_msgs extends Thread
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private String logname;
   private long   last_changed_time;
   private int    next_line_number;
 
+  private static int    message_count = 0;
+
   private static boolean valid_file = false;
   public static Thread adm_thread = null;
 
-  private static String  var_msgs =  "/var/adm/messages";
-  private static String  var_msgs0 = "/var/adm/messages.0";
+  private static String  var_msgs;
+  private static String  var_msgs0;
   private static int     sleep_time = 5000;
 
-  //private static String  var_msgs =  "/tmp/messages";
-  //private static String  var_msgs0 = "/tmp/messages.0";
-  //private static int     sleep_time = 1000;
+  static
+  {
+    if (common.onSolaris())
+    {
+      var_msgs =  "/var/adm/messages";
+      var_msgs0 = "/var/adm/messages.0";
+    }
+    else if (common.onLinux())
+    {
+      var_msgs =  "/var/log/messages";
+      var_msgs0 = "/var/log/messages.1";
+    }
+  };
 
 
 
@@ -98,7 +93,7 @@ class Adm_msgs extends Thread
   public static void terminate()
   {
     if (adm_thread != null)
-      adm_thread.interrupt();
+      common.interruptThread(adm_thread);
   }
 
 
@@ -120,6 +115,20 @@ class Adm_msgs extends Thread
         if (Thread.interrupted())
           break;
 
+        /* If we have more messages than allowed, shut down: */
+        if (message_count > getMaxCount())
+        {
+          Vector <String> msgs = new Vector(8);
+          msgs.add("*");
+          msgs.add("*");
+          msgs.add(String.format("* Maximum of %d %s messages reported. Shutting down scan.",
+                                 getMaxCount(), var_msgs));
+          msgs.add("*");
+          msgs.add("* This maximum count can be overriden using 'messagescan=12345'");
+          msgs.add("*");
+          SlaveJvm.sendMessageToConsole(msgs);
+          return;
+        }
 
         /* If messages.0 has changed, go from there: */
         if (log0.valid_file && log0.has_file_changed())
@@ -170,6 +179,7 @@ class Adm_msgs extends Thread
         title_done = true;
       }
       messages.add(this.logname + ": " + line);
+      message_count++;
     }
     fg.close();
 
@@ -181,7 +191,8 @@ class Adm_msgs extends Thread
     next_line_number = linecount;
 
     /* Now send this stuff to the master or only to the local log: */
-    if (!common.get_debug(common.NO_ADM_ON_CONSOLE))
+    // messagescan=nodisplay causes the message to also not go to messages.html!!!!
+    if (Adm_msgs.displayMessages())
       SlaveJvm.sendMessageToConsole(messages);
     else
     {
@@ -217,6 +228,10 @@ class Adm_msgs extends Thread
    * Send the last 500 lines of /var/adm/messages to the master.
    * This will be done in common.failure() but also after sucessful completion of
    * vdbench.
+   *
+   * Note: this ONLY runs on the slave, so when the master shuts down during a
+   * failure the slaves will NOT call this.
+   * This is a hole that needs to be fixed.
    */
   public static void copy_varadmmsgs()
   {
@@ -224,16 +239,18 @@ class Adm_msgs extends Thread
     if (!SlaveWorker.isAdmRunning())
       return;
 
-    String cmd = "/usr/bin/cat ";
-    Vector lines = new Vector(500, 0);
+    /* Wrong systems? */
+    if (!common.onSolaris() && ! common.onLinux())
+      return;
 
     /* If none exist, don't waste your time: */
-    if (!common.onSolaris() &&
-        !new File(var_msgs).exists() &&
+    if (!new File(var_msgs).exists() &&
         !new File(var_msgs0).exists())
         return;
 
     /* Figure out which of the files exists: */
+    String cmd   = "cat ";
+    Vector lines = new Vector(500, 0);
     if (Fget.file_exists(var_msgs0))
       cmd += var_msgs0;
 
@@ -246,12 +263,15 @@ class Adm_msgs extends Thread
     ocmd.addText(cmd);
     ocmd.execute(false);
     String[] stdout = ocmd.getStdout();
+    String[] stderr = ocmd.getStderr();
 
 
     lines.add("Last 500 lines of " + var_msgs0 + " and " + var_msgs);
     lines.add("command used: " + cmd);
     lines.add("");
 
+    for (int i = 0; i < stderr.length; i++)
+      lines.add("stderr: " + stderr[i]);
     for (int i = 0; i < stdout.length; i++)
       lines.add(stdout[i]);
 
@@ -260,8 +280,63 @@ class Adm_msgs extends Thread
   }
 
 
-  public static void main(String args[])
+  /**
+   * Figure out what the message scan options are.
+   * For compatibility we'll always have -d25 and -d26.
+   *
+   * messagescan=nodisplay
+   * messagescan=no
+   * messagescan=nnnn
+   */
+  private static boolean already_checked = false;
+  private static boolean display         = true;
+  private static boolean scan            = true;
+  private static int     max_messages    = 1000;
+  public  static boolean displayMessages()
   {
+    if (!already_checked)
+      already_checked = parseMessageOptions();
+    return display;
+  }
+  public  static boolean scanMessages()
+  {
+    if (!already_checked)
+      already_checked = parseMessageOptions();
+    return scan;
+  }
+  public static int getMaxCount()
+  {
+    //common.ptod("max_messages: " + max_messages);
+    return max_messages;
+  }
+  public static boolean parseMessageOptions()
+  {
+    for (String[] array : MiscParms.getMiscellaneous())
+    {
+      if (!array[0].equals("messagescan"))
+        continue;
+
+      for (int i = 1; i < array.length; i++)
+      {
+        String parm    = array[i];
+        String[] split = parm.trim().split("=");
+        for (String spl : split)
+        {
+          if (spl.equals("nodisplay"))
+            display = false;
+          if (spl.equals("no"))
+            scan = false;
+          if (common.isNumeric(spl))
+            max_messages = Integer.parseInt(spl);
+        }
+      }
+    }
+
+    //common.ptod("display:      " + display);
+    //common.ptod("scan:         " + scan);
+    //common.ptod("max_messages: " + max_messages);
+
+    return true;
   }
 }
 

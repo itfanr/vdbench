@@ -1,39 +1,19 @@
 
-
 /*
- * Copyright (c) 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
 
-
 #define _LARGEFILE64_SOURCE
 
-#include <jni.h>
-#include "vdbjni.h"
+#include <vdbjni.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -42,7 +22,10 @@
 #include <sys/diskio.h>
 #include <sys/param.h>
 
+extern struct Shared_memory *shared_mem;
 
+static char c[] =
+  "Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved.";
 
 
 extern jlong file_size(JNIEnv *env, jlong fhandle, const char* fname)
@@ -51,14 +34,13 @@ extern jlong file_size(JNIEnv *env, jlong fhandle, const char* fname)
   jlong   filesize;
   struct stat64 xstat;
   capacity_type cap;
-  char txt[255];
 
   rc = fstat64((int)fhandle, &xstat);
   if ( rc < 0 )
   {
-    sprintf(txt, "file_size(), fstat64 %s failed: %s\n", fname, strerror(errno));
-    PTOD(txt);
-    abort(999);
+    PTOD2("file_size(), fstat64 %s failed: %s\n", fname, strerror(errno));
+    /* abort(999); */
+	abort();
   }
   if ( S_ISREG(xstat.st_mode) )
   {
@@ -80,32 +62,32 @@ extern jlong file_size(JNIEnv *env, jlong fhandle, const char* fname)
 }
 
 
-extern jlong file_open(JNIEnv *env, const char *filename, int flush, int write)
+extern jlong file_open(JNIEnv *env, const char *filename, int open_flags, int flag)
 {
   int fd;
+  int rc;
   int access_type;
-  char txt[255];
+
 
   /* Determine access: */
-  if ( write )
-    access_type = (O_RDWR | O_CREAT);
+  if (flag & 0x01 == 1)
+    access_type = ( O_RDWR | O_CREAT );
   else
-    access_type = (O_RDONLY);
+    access_type = ( O_RDONLY );
 
-  /* Open file, specify flush if specifically requested: */
-  if ( !flush )
-    fd = open64(filename, ( access_type ), 0666);
-  else
-    fd = open64(filename, ( access_type | O_DSYNC ), 0666);
+  /* Add flags requested by caller: */
+  access_type |= open_flags;
+
+  /* Open the file: */
+  fd = open64(filename, (access_type), 0666);
   if ( fd == -1 )
   {
-    sprintf(txt, "file_open(), open %s failed: %s\n", filename, strerror(errno));
-    PTOD(txt);
+    PTOD1("error: %d", errno);
+    PTOD1("file_open(), open %s failed", filename);
     return -1;
   }
 
   return fd;
-
 }
 
 
@@ -123,6 +105,9 @@ extern jlong file_close(JNIEnv *env, jlong fhandle)
 /*                                                                            */
 extern jlong file_read(JNIEnv *env, jlong fhandle, jlong seek, jlong length, jlong buffer)
 {
+  /* Set fixed values at start and end of buffer: */
+  prepare_read_buffer(env, buffer, length);
+
   int rc = pread64((int) fhandle, (void*) (int) buffer,
                    (size_t) (int) length, (off64_t) seek);
 
@@ -138,14 +123,13 @@ extern jlong file_read(JNIEnv *env, jlong fhandle, jlong seek, jlong length, jlo
 
   else if (rc != length)
   {
-    sprintf(ptod_txt, "Invalid byte count. Expecting %lld, but read only %d bytes. ",
-            length, rc);
-    PTOD(ptod_txt);
+    PTOD2("Invalid byte count. Expecting %lld, but read only %d bytes.", length, rc);
     PTOD("Returning ENOENT");
     return ENOENT;
   }
 
-  return 0;
+  /* Make sure read was REALLY OK: */
+  return check_read_buffer(env, buffer, length);
 }
 
 
@@ -169,9 +153,7 @@ extern jlong file_write(JNIEnv *env, jlong fhandle, jlong seek, jlong length, jl
 
   else if (rc != length)
   {
-    sprintf(ptod_txt, "Invalid byte count. Expecting %lld, but wrote only %d bytes. ",
-            length, rc);
-    PTOD(ptod_txt);
+    PTOD2("Invalid byte count. Expecting %lld, but wrote only %d bytes.", length, rc);
     PTOD("Returning ENOENT");
     return ENOENT;
   }
@@ -185,20 +167,9 @@ extern jlong file_write(JNIEnv *env, jlong fhandle, jlong seek, jlong length, jl
 /*                                                                            */
 extern jlong alloc_buffer(JNIEnv *env, int bufsize)
 {
-  void *buffer;
-  char txt[255];
+  void *buffer = (void*) malloc(bufsize);
 
-  buffer = (void*) malloc(bufsize);
-  if ( buffer == NULL )
-  {
-    sprintf(txt, "get_buffer() for %d bytes failed\n", bufsize);
-    PTOD(txt);
-    abort(999);
-  }
-
-
-
-  return (jlong) (int) buffer;
+  return (jlong) buffer;
 }
 
 

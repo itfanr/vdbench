@@ -1,38 +1,20 @@
 package Vdb;
 
 /*
-* Copyright 2010 Sun Microsystems, Inc. All rights reserved.
-*
-* DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
-*
-* The contents of this file are subject to the terms of the Common
-* Development and Distribution License("CDDL") (the "License").
-* You may not use this file except in compliance with the License.
-*
-* You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
-* or ../vdbench/license.txt. See the License for the
-* specific language governing permissions and limitations under the License.
-*
-* When distributing the software, include this License Header Notice
-* in each file and include the License file at ../vdbench/licensev1.0.txt.
-*
-* If applicable, add the following below the License Header, with the
-* fields enclosed by brackets [] replaced by your own identifying information:
-* "Portions Copyrighted [year] [name of copyright owner]"
-*/
-
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
+ */
 
 /*
-* Author: Henk Vandenbergh.
-*/
+ * Author: Henk Vandenbergh.
+ */
 
-import java.io.*;
-import java.text.DateFormat;
+import java.io.File;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
 import Utils.Fget;
+import Utils.Getopt;
 
 
 
@@ -47,16 +29,31 @@ import Utils.Fget;
  **/
 public class DVPost
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
-  private static HashMap block_list = new HashMap(128);
+  private static HashMap <String, DvKeyBlock> bad_keyblock_map = new HashMap(128);
+  private static HashMap <String, Integer>  lun_keyblock_map = new HashMap(128);
+
+
+  private static HashMap <String, DataBlock>  data_block_map = new HashMap(128);
+
   private static int linecount = 0;
   private static int sectorcount = 0;
   private static Fget fg;
 
+
   private static String line;
-  private static ArrayList overview      = new ArrayList(256);
+  private static ArrayList <String> overview = new ArrayList(256);
+
+  protected static String name_mask = null;
+
+  private static int duplicates = 0;
+
+
+  private static String first_failure_date = null;
+
+  private static SimpleDateFormat df = new SimpleDateFormat( "EEEE, MMMM d, yyyy HH:mm:ss.SSS" );
 
 
   /**
@@ -78,7 +75,18 @@ public class DVPost
    */
   public static void main(String[] args)
   {
+    Getopt g = new Getopt(args, "db", 2);
+    g.print("DVPost");
+    if (!g.isOK())
+      common.failure("Parameter scan error");
+
     String filename = ".";
+    if (g.get_positionals().size() > 0)
+      filename = g.get_positional(0);
+
+    /* Needed in case any Native.xxx ends up doing a PTOD: */
+    Native.allocSharedMemory();
+
 
     /* Prevent unimportant plog messages from showing up on the console: */
     common.ignoreIfNoPlog();
@@ -90,8 +98,13 @@ public class DVPost
 
     try
     {
+      DvKeyBlock bkb = null;
+
       /* Scan all the lines of this file until we find specific important lines: */
+      if (Fget.dir_exists(filename))
+        filename = new File(filename, "errorlog.html").getAbsolutePath();
       fg = new Fget(filename);
+      //common.ptod("filename: " + filename);
       while ((line = fg.get()) != null)
       {
         linecount++;
@@ -100,66 +113,121 @@ public class DVPost
         /* all the bad sectors of a block. Without this line for a block   */
         /* we do not really know how many bad sectors there are, unless    */
         /* of course we have seen ALL sectors:                             */
-        if (line.indexOf("op:") != -1)
+        if (line.contains("op:"))
         {
           foundErrorLine();
           continue;
         }
         /*
-      String txt = String.format("dvpost: %s %s %s %x %x %d %x %x %x %x %xfersize",
-                                 lun,
-                                 name_left.trim(),
-                                 name_right.trim(),
-                                 file_start_lba,
-                                 file_lba,
-                                 xfersize,
-                                 offset_in_block,
-                                 timestamp,
-                                 error_flag,
-                                 key,
-                                 checksum,
-                                 ts);
+      String txt = String.format("dvpost: %s %s %s 0x%08x 0x%08x %d 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x %d %d",
+                   lun,                                               //  3
+                   name_left.trim(),                                  //  4
+                   Sector.check8byteString(name_right.trim()).trim(), //  5
+                   file_start_lba,                                    //  6
+                   file_lba,                                          //  7
+                   xfersize,                                          //  8  This is Key block size
+                   offset_in_block / 512,                             //  9
+                   timestamp,                                         // 10
+                   error_flag,                                        // 11
+                   key,                                               // 12
+                   checksum,                                          // 13
+                   (ts < 0) ? ts * -1 : ts,                           // 14
+                   compression,                                       // 15
+                   dedup_set);                                        // 16
         */
 
-        /* Scan until we reach the dvpost line: */
-        if (line.indexOf("dvpost:") == -1)
+        if (line.contains("Time of first failure:"))
+        {
+          String[] split = line.split(" +");
+          first_failure_date = String.format("%s %s %s %s", split[6], split[7], split[8], split[9]);
+          //common.ptod("first_failure_date: " + first_failure_date);
           continue;
+        }
+
+
+        /* Scan until we reach the dvpost line: */
+        if (!line.contains("dvpost:"))
+          continue;
+
 
         /* Rip this line apart: */
         //common.ptod("line: " + line);
-        BadBlock bb    = new BadBlock();
+        bkb            = new DvKeyBlock();
         String[] split = line.split(" +");
-        bb.lun         = split[3];
-        bb.sd_wanted   = split[4];
-        bb.file_start_lba  = Long.parseLong(split[6].substring(2), 16);
-        bb.file_lba        = Long.parseLong(split[7].substring(2), 16);
-        bb.xfersize        = Integer.parseInt(split[8]);
-        bb.key_wanted      = Integer.parseInt(split[12].substring(2), 16);
 
-        bb.sectors         = new Sector[bb.xfersize / 512];
-        bb.logical_lba     = bb.file_start_lba + bb.file_lba;
+        /* For Kaminario: \\.\F:*/
+        //if (split[4].endsWith("'") && split.length == 16)
+        //if (split[3].endsWith(":") && split.length == 16)
+        //{
+        //  String newline = "";
+        //  for (int i = 0; i < 5; i++)
+        //    newline += split[i] + " ";
+        //  newline += "kamiblnks ";
+        //  for (int i = 5; i < 16; i++)
+        //    newline += split[i] + " ";
+        //  split = newline.split(" +");
+        //}
+
+        bkb.lun             = split[3];
+        bkb.sd_wanted       = split[4];
+        bkb.file_start_lba  = Long.parseLong(split[6].substring(2), 16);
+        bkb.file_lba        = Long.parseLong(split[7].substring(2), 16);
+        bkb.key_block_size  = Integer.parseInt(split[8]);
+        bkb.key_wanted      = Integer.parseInt(split[12].substring(2), 16);
+
+        bkb.sectors         = new Sector[bkb.key_block_size / 512];
+        bkb.logical_lba     = bkb.file_start_lba + bkb.file_lba;
+        if (first_failure_date != null)
+          bkb.block_first_seen = df.parse(first_failure_date + " " + split[0]);
 
         int      offset_in_block = Integer.parseInt(split[9].substring(2), 16) * 512;
-        String   sd_right        = split[5];
-        long     timestamp       = Long.parseLong(split[10].substring(2), 16);
+        long     timestamp       = (split[10].substring(2).equals("ffffffffffffffff")) ?
+                                   0 : Long.parseLong(split[10].substring(2), 16);
         int      error_flag      = Integer.parseInt(split[11].substring(2), 16);
         int      checksum        = Integer.parseInt(split[13].substring(2), 16);
-        long     last_stamp      = Long.parseLong(split[14].substring(2), 16);
 
-        /* This is either a block that we already saw, or a new block: */
-        bb  = haveBadSector(bb, offset_in_block);
-        if (bb == null)
-          continue;
+        bkb.dvpost_date = new Date(timestamp / 1000);
+
+        /* Store the key block size for the current lun/file: */
+        if (lun_keyblock_map.get(bkb.lun) == null)
+          lun_keyblock_map.put(bkb.lun, bkb.key_block_size);
+
+
+        /* Any error below, treat it as the errorlog.html having bad data. */
+        /* Including maybe the file not being properly closed. */
+        try
+        {
+          /* This is either a block that we already saw, or a new block: */
+          bkb  = haveBadSector(bkb, offset_in_block);
+          if (bkb == null)
+            continue;
+        }
+        catch (Exception e)
+        {
+          common.ptod("Exception, treating it as end-of-file");
+          common.ptod(e);
+          break;
+        }
       }
 
-      if (block_list.size() == 0)
+      if (duplicates > 0)
+        common.failure("%d duplicate blocks found", duplicates);
+
+      if (bad_keyblock_map.size() == 0)
         common.failure("No bad blocks found. No 'dvpost:' lines found?");
 
       reportSomeSectorStuff();
 
-      PostGui window = new PostGui(filename, sortBlocks("lun"), overview);
-      window.setVisible(true);
-      window.repaint();
+      if (!g.check('b'))
+      {
+        PostGui window = new PostGui(filename, sortBlocks("lun"), overview);
+        window.setVisible(true);
+        window.repaint();
+        return;
+      }
+
+      for (String ov : overview)
+        System.out.println(ov);
     }
 
     catch (Exception e)
@@ -174,7 +242,7 @@ public class DVPost
   /**
    * We have a bad sector. Pick up as much information as possible.
    */
-  private static BadBlock haveBadSector(BadBlock bb_in, int offset_in_block)
+  private static DvKeyBlock haveBadSector(DvKeyBlock bkb_in, int offset_in_block)
   {
     /*
     line0:         Data Validation error at byte offset 0xd91b0000 (3642425344); 512 byte block offset 0x6c8d80 (7114112)
@@ -183,37 +251,76 @@ public class DVPost
     line2:         SD name miscompare.
     line3:         Lun: /dev/rdsk/c0t75d0s2; SD name in block expected: 'sd3'; read: 'sd2'.
     or             Lun: r:\junk\vdb2;           name in block expected: 'sd1'; read: 'sd1'.
-    line4:         The disk block just read was written Tuesday, June 23, 2009 09:57:28.390
+    line4:         The disk block just read was written Tuesday, June 23, 2010 09:57:28.390
     line5: 0x000   00000000 d91b0000 ........ ........   00000000 d91b0000 00046d06 e2c14466
     line6: 0x010*  01..0000 73643320 20202020 00000000   01c40000 73643220 20202020 00000000
     line7: 0x020   4db23200 26d91900 136c8c80 09b64640   4db23200 26d91900 136c8c80 09b64640
     .....
     */
 
-    Date last_date = null;
     String[] split;
 
     /* See if we already have this block, if not, add it: */
-    BadBlock bb = (BadBlock) block_list.get(bb_in.lun + " " + bb_in.logical_lba);
-    if (bb == null)
+    String lun_lba = bkb_in.lun + " " + bkb_in.logical_lba;
+    DvKeyBlock bkb = bad_keyblock_map.get(lun_lba);
+    if (bkb == null)
     {
-      bb = bb_in;
-      block_list.put(bb_in.lun + " " + bb_in.logical_lba, bb);
+      bkb = bkb_in;
+      bad_keyblock_map.put(lun_lba, bkb);
+      if (bkb.first_dvpost_line_tod == null)
+        bkb.first_dvpost_line_tod = line.split(" ")[0];
+      //common.ptod("lun_lba: " + lun_lba);
     }
 
-    /* Save the 'dvpost:' line, stripped of its overhead: */
+    /* Save the 'dvpost:' line, stripped of its overhead, but first save the message tod: */
+    String tod = line.split(" ")[0];
     split = splitLine();
-    bb.raw_input.add("");
-    bb.raw_input.add(line);
+    bkb.raw_input.add("");
+    bkb.raw_input.add(line);
 
     /* Continue until we find line5: */
     while ((line = fg.get()) != null)
     {
       linecount++;
+
+      if (line.contains("The sector below was written"))
+      {
+        if (bkb.first_sector_written_tod == null)
+        {
+          bkb.first_sector_written_tod = parseWrittenDate(line);
+        }
+        //continue;
+      }
+
       split = splitLine();
-      bb.raw_input.add(line);
+      bkb.raw_input.add(line);
       if (split.length == 0)
         continue;
+
+      /* This comes from the 'read_immediately' option: */
+      if (line.contains("Time that this block"))
+      {
+        String last = null;
+        if (line.contains("read:"))
+        {
+          bkb.last_valid_rw = "read";
+          last = line.substring(line.indexOf("read:") + 5).trim();
+        }
+        else
+        {
+          bkb.last_valid_rw = "write";
+          last = line.substring(line.indexOf("write:") + 6).trim();
+        }
+
+        if (bkb.last_tod_valid == null)
+          bkb.last_tod_valid = last;
+        else if (!last.equalsIgnoreCase(bkb.last_tod_valid))
+          bkb.last_tod_valid = "mixed";
+
+        //common.ptod("bkb.last_tod_valid: " + bkb.last_tod_valid);
+        bkb.last_valid = parseLastDate(bkb.last_tod_valid);
+        //common.ptod("bkb.last_valid: " + bkb.last_valid);
+      }
 
       /* Break at line5: */
       if (split[0].equals("0x000") || split[0].equals("0x000*"))
@@ -231,7 +338,7 @@ public class DVPost
         break;
 
       linecount++;
-      bb.raw_input.add(line.substring(26));
+      bkb.raw_input.add(line.substring(26));
       split = splitLine();
       String tmp = String.format("0x%03x", i);
       if (!split[0].startsWith(tmp))
@@ -248,11 +355,11 @@ public class DVPost
     //}
 
     /* Now split the 32 lines of data that we have into 'expected' and 'read': */
-    Sector sector     = new Sector();
-    sector.lba_wanted = bb.logical_lba + offset_in_block;
-    sector.timestamp  = last_date;
-    bb.sectors[offset_in_block / 512] = sector;
-    bb.sectors_reported ++;
+    Sector sector        = new Sector();
+    sector.lba_wanted    = bkb.logical_lba + offset_in_block;
+    sector.tod_in_sector = bkb.dvpost_date;
+    bkb.sectors[offset_in_block / 512] = sector;
+    bkb.sectors_reported ++;
 
     for (int i = 0; i < count; i++)
     {
@@ -294,16 +401,22 @@ public class DVPost
     }
 
     /* Translate the SD as it was read: */
-    sector.sd_wanted = bb.sd_wanted;
-    sector.sd_read   = xlateSD(sector.was_read[5], sector.was_read[6], bb.sd_wanted, hex_lines[1]);
+    sector.sd_wanted = bkb.sd_wanted;
+    sector.sd_read   = xlateSD(sector.was_read[5], sector.was_read[6], bkb.sd_wanted, hex_lines[1]);
+    if (sector.sd_read.length() == 0)
+    {
+      common.ptod("line: " + line);
+      common.failure("empty sd");
+    }
 
     /* Pick up keys: */
-    bb.key_wanted     =
+    bkb.key_wanted     =
     sector.key_wanted = sector.expected[4] >> 24;
     sector.key_read   = sector.was_read[4] >> 24;
+    bkb.key_read       = sector.key_read;
     //DVPost.print("sector.key_wanted: " + sector.key_wanted + " " + sector.key_read);
 
-    bb.different_words_in_block += sector.countDifferences();
+    bkb.different_words_in_block += sector.countDifferences();
 
 
     /* If the lba was wrong, get LFSR data belonging to bad lba: */
@@ -326,31 +439,61 @@ public class DVPost
 
     // xx zz: 0x000*  00000000 00160000 ........ ........   00000000 0d55b000 00047363 6ac8d061
     // xx zz: 0x010*  01..0000 73643237 20202020 00000000   013d0000 38316473 20202020 00000000
-    return bb;
+    return bkb;
   }
 
-// xx yy zz op: read   lun: r:\quick_vdbench_test          lba:      5810176 0x0058A800 xfer:     1024 errno: 60003 A Data validation error was discovered
+  // 0  1  2  3   4    5    6                     7     8       9          10     11   12     13
+  // xx yy zz op: read lun: r:\quick_vdbench_test lba:  5810176 0x0058A800 xfer:  1024 errno: 60003 A Data validation error was discovered
+  /**
+   * Parse a line labeled 'op:' with the real data block info:
+   */
   private static void foundErrorLine()
   {
     String[] split = line.trim().split(" +");
+    //common.ptod("line: " + line);
 
     /* Pick up some stuff: */
-    long lba = Long.parseLong(split[8]);
-    String lun = split[6];
+    long   lba     = Long.parseLong(split[8]);
+    String lun     = split[6];
+    String lun_lba = lun + " " + lba;
 
-    /* See if we already have this block, if not, add it: */
-    BadBlock bb = (BadBlock) block_list.get(lun + " " + lba);
-    if (bb == null)
+    if (!split[13].equals("60003"))
+      return;
+
+    /* Create a DataBlock instance for each real data block we found. */
+    /* This is different from BadBlock which is only a Key block. */
+    if (data_block_map.get(lun_lba) != null)
+    {
+      common.ptod("Duplicate i/o error reported: " + lun_lba);
+      duplicates++;
+      return;
+    }
+    DataBlock db     = new DataBlock();
+    data_block_map.put(lun_lba, db);
+    db.logical_lba   = lba;
+    db.lun           = lun;
+    db.key_blocksize = lun_keyblock_map.get(lun);
+    db.data_xfersize = Integer.parseInt(split[11]);
+    db.failure       = split[2];
+
+    /* See if we already have this block from 'dvpost:' line: */
+    DvKeyBlock bkb = (DvKeyBlock) bad_keyblock_map.get(lun_lba);
+    if (bkb == null)
     {
       DVPost.print("Found an i/o error for an lba which was not reported by Data Validation:");
-      DVPost.print("line: " + common.replace(line, "  ", " "));
+      DVPost.print("This can mean that the first Key block of a data block was NOT in error!");
+      String tmp = common.replace(line, "  ", " ");
+      DVPost.print(tmp.substring(tmp.indexOf("op:")));
+      DVPost.print("");
+
       return;
     }
 
-    bb.failed_operation = split[4];
-    bb.error_code = Integer.parseInt(split[13]);
-    if (bb.error_code != 60003 && bb.error_code != 803)
-      bad("Invalid i/o error code: " + bb.error_code);
+    /* Add the op: info to the BadBlock that we found earlier with dvpost dinfo: */
+    bkb.failed_operation = split[4];
+    bkb.error_code = Integer.parseInt(split[13]);
+    if (bkb.error_code != 60003 && bkb.error_code != 803)
+      bad("Invalid i/o error code: " + bkb.error_code);
   }
 
 
@@ -358,6 +501,12 @@ public class DVPost
 
   private static String xlateSD(long sd1, long sd2, String wanted, String hex)
   {
+    /* Just in case we read zeros: */
+    if (sd1 == 0 || sd2 == 0)
+      return "nulls";
+    if (sd1 == -1 || sd2 == -1)
+      return "neg-1";
+
     String sd = "";
     sd += (char) (sd1 >>> 24 & 0xff);
     sd += (char) (sd1 >>> 16 & 0xff);
@@ -373,6 +522,7 @@ public class DVPost
     if (sd.equals(wanted))
       return wanted;
 
+
     /* Because of a hi-ending vs. low-ending issue during reporting, */
     /* try a reversal of the name:                                   */
     String reversed = "";
@@ -387,14 +537,22 @@ public class DVPost
     if (reversed.startsWith("sd") || reversed.startsWith("SD"))
       return reversed;
 
-    //DVPost.print("sd: >>>>" + sd + "<<<< " + hex);
+    /* Was this sd really nothing but blanks? */
+    if (sd.length() == 0)
+      return "'blanks'";
+
     return sd;
   }
 
   private static void reportSomeSectorStuff()
   {
+    name_mask = getLunNameMask();
+    reportBadKeyBlockStatus();
+    reportDataBlockStuff();
+
     reportErrorCodes();
-    reportBlockStatus();
+    reportHighDeltas();
+    reportWrongKeys();
     reportTimestamps();
     reportSingleBitErrors();
     reportSdNameWrong();
@@ -402,26 +560,26 @@ public class DVPost
     //reportSomeSectorsBad(true);
     //reportSomeSectorsBad(false);
     reportWrongLbas();
-    reportWrongKeys();
+    //reportWrongKeys();
   }
 
 
-  private static BadBlock[] sortBlocks(String order)
+  private static DvKeyBlock[] sortBlocks(String order)
   {
-    BadBlock[] blocks   = (BadBlock[]) block_list.values().toArray(new BadBlock[0]);
-    BadBlock.sort_order = order;
+    DvKeyBlock[] blocks   = (DvKeyBlock[]) bad_keyblock_map.values().toArray(new DvKeyBlock[0]);
+    DvKeyBlock.sort_order = order;
     Arrays.sort(blocks);
     return blocks;
   }
 
   private static void reportErrorCodes()
   {
-    BadBlock[] blocks = sortBlocks("lun");
+    DvKeyBlock[] blocks = sortBlocks("lun");
     int count = 0;
     for (int i = 0; i < blocks.length; i++)
     {
-      BadBlock bb = blocks[i];
-      if (bb.error_code != 0)
+      DvKeyBlock bkb = blocks[i];
+      if (bkb.error_code != 0)
         count ++;
     }
 
@@ -429,52 +587,55 @@ public class DVPost
       return;
 
     DVPost.print("\n\n");
-    DVPost.print("Blocks that have completed their error reporting : ");
-    DVPost.print("%s %s", BadBlock.header(), "error");
+    DVPost.print("Blocks that have completed their error reporting: ");
+    DVPost.print("%s %s", DvKeyBlock.header(), "error");
 
     for (int i = 0; i < blocks.length; i++)
     {
-      BadBlock bb = blocks[i];
-      if (bb.error_code > 0)
-        DVPost.print("%s %d", bb.print(), bb.error_code);
+      DvKeyBlock bkb = blocks[i];
+      if (bkb.error_code > 0)
+        DVPost.print("%s %d", bkb.print(), bkb.error_code);
     }
   }
 
 
 
-  private static void reportBlockStatus()
+  private static void reportBadKeyBlockStatus()
   {
-    BadBlock[] blocks = sortBlocks("lun");
+    DvKeyBlock[] blocks = sortBlocks("lun");
 
     DVPost.print("\n\n");
-    DVPost.print("General bad block status:");
-    DVPost.print("%s %s", BadBlock.header(), "Errors");
+    DVPost.print("Bad Key Block status:");
+    DVPost.print("%s %s", DvKeyBlock.header(), "Errors");
     for (int i = 0; i < blocks.length; i++)
     {
-      BadBlock bb = blocks[i];
-      DVPost.print("%s %s", bb.print(), bb.getBlockStatusShort());
+      DvKeyBlock bkb = blocks[i];
+      DVPost.print("%s %s", bkb.print(), bkb.getBlockStatusShort());
     }
   }
 
   private static void reportTimestamps()
   {
-    BadBlock[] blocks = sortBlocks("lun");
+    DvKeyBlock[] blocks = sortBlocks("lun");
 
     DVPost.print("\n\n");
-    DVPost.print("Timestamps of 'last write' found in block:");
-    DVPost.print("%s %s", BadBlock.header(), "Key; timestamp");
+    DVPost.print("Timestamps of 'last write' found in Key block:");
+    DVPost.print("%s %s", DvKeyBlock.header(), "Timestamp found / last");
 
     HashMap times = new HashMap(16);
     for (int i = 0; i < blocks.length; i++)
     {
-      BadBlock bb = blocks[i];
-      DVPost.print("%s %02x %s", bb.print(), bb.key_wanted, bb.getTimestamps());
+      DvKeyBlock bkb = blocks[i];
+      String stamps = bkb.getTimestamps();
+      if (bkb.last_tod_valid != null)
+        stamps += " " + bkb.last_tod_valid;
+      DVPost.print("%s %s", bkb.print(),  stamps);
     }
   }
 
   private static void reportWrongKeys()
   {
-    BadBlock[] blocks = sortBlocks("lun");
+    DvKeyBlock[] blocks = sortBlocks("lun");
 
     int count = 0;
     for (int i = 0; i < blocks.length; i++)
@@ -487,14 +648,55 @@ public class DVPost
     {
       DVPost.print("\n\n");
       DVPost.print("Blocks that have at least one wrong key: ");
-      DVPost.print("%s %s", BadBlock.header(), "(Expected) read");
+      DVPost.print("%s %s", DvKeyBlock.header(), "(Expected) read high_delta");
       for (int i = 0; i < blocks.length; i++)
       {
-        BadBlock bb = blocks[i];
-        String wrongs = bb.getWrongKeys();
+        DvKeyBlock bkb = blocks[i];
+        String wrongs = bkb.getWrongKeys();
+
+        String delta_info = "";
+        int high_delta = bkb.getHighestKeyDelta();
+        if (high_delta > 1)
+          delta_info = "delta " + high_delta;
+
         if (wrongs == null)
           continue;
-        DVPost.print("%s (%02x) %s", bb.print(), bb.key_wanted, wrongs);
+        DVPost.print("%s (%02x) %s %s", bkb.print(), bkb.key_wanted, wrongs, delta_info);
+      }
+    }
+  }
+
+  /**
+   * Repoprt blocks that are more than one key generation behind
+   */
+  private static void reportHighDeltas()
+  {
+    DvKeyBlock[] blocks = sortBlocks("lun");
+
+    int count = 0;
+    for (int i = 0; i < blocks.length; i++)
+    {
+      if (blocks[i].getWrongKeys() != null)
+        count++;
+    }
+
+    if (count > 0)
+    {
+      DVPost.print("\n\n");
+      DVPost.print("Key blocks that have at least TWO key delta: ");
+      DVPost.print("%s %s", DvKeyBlock.header(), "(Expected) read");
+      for (int i = 0; i < blocks.length; i++)
+      {
+        DvKeyBlock bkb = blocks[i];
+        String wrongs = bkb.getWrongKeys();
+        if (wrongs == null)
+          continue;
+
+        int high_delta = bkb.getHighestKeyDelta();
+        if (high_delta < 2)
+          continue;
+
+        DVPost.print("%s (%02x) %s delta=%d", bkb.print(), bkb.key_wanted, wrongs, high_delta);
       }
     }
   }
@@ -502,7 +704,7 @@ public class DVPost
 
   private static void reportWrongLbas()
   {
-    BadBlock[] blocks = sortBlocks("lun");
+    DvKeyBlock[] blocks = sortBlocks("lun");
 
     int count = 0;
     for (int i = 0; i < blocks.length; i++)
@@ -514,24 +716,105 @@ public class DVPost
     if (count > 0)
     {
       DVPost.print("\n\n");
-      DVPost.print("Blocks that have at least one wrong lba in their data:");
-      DVPost.print("%s %s", BadBlock.header(), "bad lba");
+      DVPost.print("Key blocks that have at least one wrong lba in their data:");
+      DVPost.print("%s %s", DvKeyBlock.header(), "bad lba");
       for (int i = 0; i < blocks.length; i++)
       {
-        BadBlock bb = blocks[i];
-        String wrongs = bb.getWrongLbas();
+        DvKeyBlock bkb = blocks[i];
+        String wrongs = bkb.getWrongLbas();
         if (wrongs == null)
           continue;
-        DVPost.print("%s %s", bb.print(), wrongs);
+        DVPost.print("%s %s", bkb.print(), wrongs);
       }
     }
+  }
+
+  /**
+   * scan through all data blocks, and see how many of the keyblocks within that
+   * datablock are bad.
+   */
+  private static void reportDataBlockStuff()
+  {
+    String hdr_mask = name_mask + " %10s %10s %10s %9s %9s %5s %7s %5s %12s %7s";
+    String txt_mask = name_mask + " %10x %10x %10x %9d %9d %5d %7d %5d %12s %7s";
+    String hdr = String.format(hdr_mask,
+                               "lun/file",
+                               "log_lba",
+                               "start_lba",
+                               "file_lba",
+                               "xfersize",
+                               "keyblocks",
+                               "(bad)",
+                               "sectors",
+                               "(bad)",
+                               "error_time",
+                               "flag");
+
+    DVPost.print("");
+    DVPost.print("Data block information. A data block is divided into 'n' Key blocks, "+
+                 "each Key block is divided into 512-byte sectors");
+    DVPost.print("");
+    DVPost.print(hdr);
+    DVPost.print("");
+
+    String[] keys = data_block_map.keySet().toArray(new String[0]);
+    Arrays.sort(keys);
+    for (String key : keys)
+    {
+      DataBlock db       = data_block_map.get(key);
+      int keyblocks      = db.data_xfersize / db.key_blocksize;
+      int sectors        = db.data_xfersize / 512;
+      int bad_key_blocks = 0;
+      int bad_sectors    = 0;
+      long file_start_lba = 0;
+      for (int i = 0; i < keyblocks; i++)
+      {
+        String lun_lba = db.lun + " " + (db.logical_lba + (i * db.key_blocksize));
+        DvKeyBlock bkb = bad_keyblock_map.get(lun_lba);
+        if (bkb != null)
+        {
+          file_start_lba = bkb.file_start_lba;
+          bad_key_blocks++;
+          for (Sector sector : bkb.sectors)
+          {
+            if (sector != null)
+              bad_sectors++;
+          }
+        }
+      }
+
+      String flag = (sectors == bad_sectors) ? "" : "partial";
+
+      String txt = String.format(txt_mask,
+                                 db.lun,
+                                 db.logical_lba,
+                                 file_start_lba,
+                                 db.logical_lba - file_start_lba,
+                                 db.data_xfersize,
+                                 keyblocks,
+                                 bad_key_blocks,
+                                 sectors,
+                                 bad_sectors,
+                                 db.failure,
+                                 flag);
+      DVPost.print(txt);
+    }
+  }
+
+  private static String getLunNameMask()
+  {
+    int max_length = 1;
+    String[] keys = data_block_map.keySet().toArray(new String[0]);
+    for (String key : keys)
+      max_length = Math.max(max_length, data_block_map.get(key).lun.length());
+    return "%-" + max_length + "s";
   }
 
 
 
   private static void reportSingleBitErrors()
   {
-    BadBlock[] blocks = sortBlocks("lun");
+    DvKeyBlock[] blocks = sortBlocks("lun");
 
     int count = 0;
     for (int i = 0; i < blocks.length; i++)
@@ -545,13 +828,13 @@ public class DVPost
       DVPost.print("\n\n");
       DVPost.print("Single bit errors: Blocks that have single bit errors beyond the 32-byte header:");
       DVPost.print("(Single bit error: if any 32-bit word is only one bit off)");
-      DVPost.print("%s", BadBlock.header());
+      DVPost.print("%s", DvKeyBlock.header());
       for (int i = 0; i < blocks.length; i++)
       {
-        BadBlock bb = blocks[i];
-        if (bb.countSingleBitWords() == 0)
+        DvKeyBlock bkb = blocks[i];
+        if (bkb.countSingleBitWords() == 0)
           continue;
-        DVPost.print("%s", bb.print());
+        DVPost.print("%s", bkb.print());
       }
     }
   }
@@ -559,7 +842,7 @@ public class DVPost
 
   private static void reportSdNameWrong()
   {
-    BadBlock[] blocks = sortBlocks("lun");
+    DvKeyBlock[] blocks = sortBlocks("lun");
 
     int count = 0;
     for (int i = 0; i < blocks.length; i++)
@@ -572,15 +855,15 @@ public class DVPost
     {
       DVPost.print("\n\n");
       DVPost.print("Mismatch in SD name:");
-      DVPost.print("%s %s", BadBlock.header(), "mismatch(es)");
+      DVPost.print("%s %s", DvKeyBlock.header(), "mismatch(es)");
       for (int i = 0; i < blocks.length; i++)
       {
-        BadBlock bb = blocks[i];
-        String wrongs = bb.getWrongSdNames();
+        DvKeyBlock bkb = blocks[i];
+        String wrongs = bkb.getWrongSdNames();
         if (wrongs == null)
           continue;
 
-        DVPost.print("%-20s %s", bb.print(), wrongs);
+        DVPost.print("%-20s %s", bkb.print(), wrongs);
       }
     }
   }
@@ -588,13 +871,13 @@ public class DVPost
 
   private static void reportAllSectorsBad()
   {
-    BadBlock[] blocks = sortBlocks("lun");
+    DvKeyBlock[] blocks = sortBlocks("lun");
 
     int count = 0;
     for (int i = 0; i < blocks.length; i++)
     {
-      BadBlock bb = blocks[i];
-      if (bb.xfersize / 512 == bb.sectors_reported)
+      DvKeyBlock bkb = blocks[i];
+      if (bkb.key_block_size / 512 == bkb.sectors_reported)
         count++;
     }
 
@@ -602,12 +885,12 @@ public class DVPost
     {
       DVPost.print("\n\n");
       DVPost.print("Blocks that have differences in all sectors:");
-      DVPost.print("%s", BadBlock.header());
+      DVPost.print("%s", DvKeyBlock.header());
       for (int i = 0; i < blocks.length; i++)
       {
-        BadBlock bb = blocks[i];
-        if (bb.xfersize / 512 == bb.sectors_reported)
-          DVPost.print("%s", bb.print());
+        DvKeyBlock bkb = blocks[i];
+        if (bkb.key_block_size / 512 == bkb.sectors_reported)
+          DVPost.print("%s", bkb.print());
       }
     }
   }
@@ -621,19 +904,19 @@ public class DVPost
    */
   private static void reportSomeSectorsBad(boolean completed)
   {
-    BadBlock[] blocks = sortBlocks("lun");
+    DvKeyBlock[] blocks = sortBlocks("lun");
 
     int count = 0;
     for (int i = 0; i < blocks.length; i++)
     {
-      BadBlock bb = blocks[i];
+      DvKeyBlock bkb = blocks[i];
 
       /* Look at those blocks we know had their reporting completed? */
-      if (completed && bb.failed_operation == null)
+      if (completed && bkb.failed_operation == null)
         continue;
-      if (!completed && bb.failed_operation != null)
+      if (!completed && bkb.failed_operation != null)
         continue;
-      if (bb.xfersize / 512 != bb.sectors_reported)
+      if (bkb.key_block_size / 512 != bkb.sectors_reported)
         count++;
     }
 
@@ -647,12 +930,12 @@ public class DVPost
         DVPost.print("this does not mean that these blocks may not have more bad sectors.");
         DVPost.print("(No 'op:' i/o error message was reported for this block).");
       }
-      DVPost.print("%s %s", BadBlock.header(), "sectors");
+      DVPost.print("%s %s", DvKeyBlock.header(), "sectors");
       for (int i = 0; i < blocks.length; i++)
       {
-        BadBlock bb = blocks[i];
-        if (bb.xfersize / 512 != bb.sectors_reported)
-          DVPost.print("%s %s", bb.print(), bb.getBadSectors());
+        DvKeyBlock bkb = blocks[i];
+        if (bkb.key_block_size / 512 != bkb.sectors_reported)
+          DVPost.print("%s %s", bkb.print(), bkb.getBadSectors());
       }
     }
   }
@@ -668,9 +951,9 @@ public class DVPost
 
 
   /**
-   * Split the inout line after removing the timestamp and slave name. ';' and "'"
-   * are also removed. (Can not remove ':' or '.' since it is part of a windows
-   * file name)
+   * Split the input line after removing the timestamp and slave name. ';' and
+   * "'" are also removed. (Can not remove ':' or '.' since it is part of a
+   * windows file name)
    */
   private static String[] splitLine()
   {
@@ -689,38 +972,14 @@ public class DVPost
 
     return stuff;
   }
-}
 
-class BadBlock implements Comparable
-{
-  long     logical_lba;    /* file_start_lba + file_lba */
-  long     file_start_lba;
-  long     file_lba;
-  String   lun;
-  String   sd_wanted;
-  int      sectors_reported;
-  int      key_wanted;
-  int      xfersize;
-  Sector[] sectors;
-  String   failed_operation;
-  int      error_code = 0;
-  int      different_words_in_block;
-  ArrayList raw_input = new ArrayList(4096);
-
-  static String sort_order = null;
-
-  public BadBlock()
-  {
-  }
 
   public static Date parseLastDate(String line)
   {
     try
     {
-      //Wednesday, December 31, 1969 19:23:09.934
-      DateFormat df = new SimpleDateFormat( "E, MMMM d, yyyy HH:mm:ss.SSS" );
-      String tmp = line.substring(line.indexOf("written") + 8);
-      return df.parse(tmp);
+      SimpleDateFormat df = new SimpleDateFormat( "EEEE MMMM d HH:mm:ss zzz yyyy" );
+      return df.parse(line);
     }
 
     catch (ParseException e)
@@ -729,443 +988,46 @@ class BadBlock implements Comparable
     }
   }
 
-  public int compareTo(Object obj)
+  public static Date parseWrittenDate(String line)
   {
-    BadBlock bb = (BadBlock) obj;
-
-    if (sort_order.equals("lba"))
-      return(int) (logical_lba - bb.logical_lba);
-
-    /* For Lun, sort lun first, then lba: */
-    if (sort_order.equals("lun"))
+    //The sector below was written Wednesday, June 24, 2015 14:04:40.956 MDT
+    try
     {
-      int diff = lun.compareTo(bb.lun);
-      if (diff != 0)
-        return diff;
-      return(int) (logical_lba - bb.logical_lba);
-    }
-    else
-      common.failure("Unknown sort flag");
-    return 0;
-  }
+      /* (Excluded the 'day of the week' from format) */
+      SimpleDateFormat df1 = new SimpleDateFormat( "MMMM d, yyyy HH:mm:ss.SSS zzz" );
 
-  public int countSingleBitWords()
-  {
-    int bitwords = 0;
-    for (int i = 0; i < sectors.length; i++)
-    {
-      if (sectors[i] != null && sectors[i].singlebit_words != 0)
-        bitwords++;
-    }
-    return bitwords;
-  }
-
-  public String getBlockStatusShort()
-  {
-    String txt = "";
-    if (getWrongKeys() != null)
-      txt += "Key; ";
-    if (getWrongLbas() != null)
-      txt += "Lba; ";
-    if (countSingleBitWords() > 0)
-      txt += "Single bit; ";
-    if (getWrongSdNames() != null)
-      txt += "SD; ";
-    if (getLFSRStatus())
-      txt += "Bad lba data is bad; ";
-    if (anyPartialSectors())
-      txt += "Data, partial; ";
-    else if (different_words_in_block > 0)
-      txt += "Data; ";
-    txt += getBadSectors() + " ";
-
-    return txt;
-  }
-
-  public String getBlockStatus()
-  {
-    String txt = "";
-    if (error_code == 0 && sectors_reported != (xfersize / 512))
-      txt += "- Not all sectors have been reported.\n";
-    if (getWrongKeys() != null)
-      txt += "- Invalid key(s) read.\n";
-    if (getWrongLbas() != null)
-      txt += "- Invalid lba read.\n";
-    if (countSingleBitWords() > 0)
-      txt += "- At least one single bit error.\n";
-    if (getWrongSdNames() != null)
-      txt += "- Invalid SD name read.\n";
-    if (getLFSRStatus())
-      txt += "- Data corruption even when using wrong lba or key.\n";
-    if (anyPartialSectors())
-      txt += "- At least one sector is partially correct.\n";
-    else if (different_words_in_block > 0)
-      txt += "- Data corruption.\n";
-    txt += "- " + getBadSectors() + " ";
-
-    return txt;
-  }
-
-  /**
-   * Return the numbers of the sectors that are bad in rages.
-   */
-  public String getBadSectors()
-  {
-    Vector numbers = new Vector(sectors.length);
-
-    /* Put all bad sector numbers in a row: */
-    for (int i = 0; i < sectors.length; i++)
-    {
-      if (sectors[i] != null)
-        numbers.add(new Integer(i));
+      String tmp = line.substring(line.indexOf(",") + 2);
+      return df1.parse(tmp);
     }
 
-    /* Identify whether we received all the sectors. Having an error_code */
-    /* confirms that, but also having seen the last sector confirms that: */
-    String txt = error_code != 0 ? "Bad sectors: " : "Bad sectors: (incomplete) ";
-    if (sectors[ sectors.length - 1 ] != null)
-      txt = "Bad sectors: ";
-
-    txt += compressSectorNumbers(numbers, sectors.length);
-
-    return txt;
-  }
-
-
-  /**
-   * Return the Integers that are in the received Vector as a String,
-   * reporting them for instance as 0-15,16,18-20 etc.
-   */
-  public static String compressSectorNumbers(Vector numbers, int max)
-  {
-    String txt = "";
-
-    if (numbers.size() == 0)
-      return "All " + max + " sectors good (based on lba and key that was read)";
-    if (numbers.size() == max)
-      return "All " + max + " sectors bad ";
-
-    /* Convert Vector to array: */
-    int[] array = new int[numbers.size()];
-    for (int i = 0; i < numbers.size(); i++)
-      array[i] = ((Integer) numbers.elementAt(i)).intValue();
-
-    int first = array[0];
-    int last  = array[0];
-    for (int i = 1; i < array.length; i++)
+    catch (ParseException e)
     {
-      //DVPost.print("loop: " + array[i] + " " + last);
-      if (array[i] != (last + 1))
+      try
       {
-        if (first == last)
-          txt += first + ",";
-        else
-          txt += first + "-" + last + ",";
-        first = array[i];
+        /* (Excluded the 'day of the week' from format) */
+        SimpleDateFormat df2 = new SimpleDateFormat( "MMMM d, yyyy HH:mm:ss.SSS" );
+
+        String tmp = line.substring(line.indexOf(",") + 2);
+        return df2.parse(tmp);
       }
-      last = array[i];
-    }
 
-    if (first == last)
-      txt += first;
-    else
-      txt += first + "-" + last;
-
-    return txt + " (" + array.length + " of " + max + ")";
-  }
-
-  public String getWrongKeys()
-  {
-    HashMap wrongs = new HashMap(8);
-    for (int i = 0; i < sectors.length; i++)
-    {
-      if (sectors[i] != null && sectors[i].key_read != sectors[i].key_wanted)
-        wrongs.put(new Integer(sectors[i].key_read), new Integer(sectors[i].key_read));
-    }
-
-    if (wrongs.size() == 0)
-      return null;
-
-    Integer[] ints = (Integer[]) wrongs.keySet().toArray(new Integer[0]);
-    Arrays.sort(ints);
-    String txt = "";
-    for (int i = 0; i < ints.length; i++)
-      txt += String.format("%02x ", ints[i].intValue() & 0xff);
-    return txt;
-  }
-
-  public boolean anyPartialSectors()
-  {
-    boolean partial = false;
-    for (int i = 0; i < sectors.length; i++)
-    {
-      if (sectors[i] != null && sectors[i].different_words_in_sector != 120)
-        partial = true;
-    }
-
-    return partial;
-  }
-  public String getTimestamps()
-  {
-    DateFormat df = new SimpleDateFormat( "(MM/dd/yy HH:mm:ss.SSS) " );
-    HashMap times = new HashMap(8);
-    for (int i = 0; i < sectors.length; i++)
-    {
-      if (sectors[i] != null && sectors[i].timestamp != null)
-        times.put(sectors[i].timestamp, sectors[i].timestamp);
-    }
-
-    if (times.size() == 0)
-      return null;
-
-    Date[] dates = (Date[]) times.keySet().toArray(new Date[0]);
-    Arrays.sort(dates);
-    String txt = "";
-    for (int i = 0; i < dates.length; i++)
-      txt += df.format(dates[i]);
-    return txt;
-  }
-
-  public String getWrongLbas()
-  {
-    HashMap wrongs = new HashMap(8);
-    for (int i = 0; i < sectors.length; i++)
-    {
-      if (sectors[i] != null && sectors[i].lba_read != sectors[i].lba_wanted)
-        wrongs.put(new Long(sectors[i].lba_read), new Long(sectors[i].lba_read));
-    }
-
-    if (wrongs.size() == 0)
-      return null;
-
-    Long[] longs = (Long[]) wrongs.keySet().toArray(new Long[0]);
-    Arrays.sort(longs);
-    String txt = "";
-    for (int i = 0; i < longs.length; i++)
-    {
-      if (i > 2)
-        return txt + "...";
-      else
-        txt += String.format("0x%x ", longs[i].longValue());
-    }
-    return txt;
-  }
-
-
-  public String getWrongSdNames()
-  {
-    HashMap wrongs = new HashMap(8);
-    for (int i = 0; i < sectors.length; i++)
-    {
-      if (sectors[i] != null && sectors[i].sd_read != sectors[i].sd_wanted)
+      catch (ParseException e2)
       {
-        wrongs.put(sectors[i].sd_read, sectors[i].sd_read);
+        common.ptod(e2);
+        return null;
       }
     }
-
-    if (wrongs.size() == 0)
-      return null;
-
-    String[] sds = (String[]) wrongs.keySet().toArray(new String[0]);
-    Arrays.sort(sds);
-    String txt = "";
-    for (int i = 0; i < sds.length; i++)
-      txt += sds[i] + " ";
-    return txt;
   }
 
-  public boolean getLFSRStatus()
-  {
-    boolean any_bad = false;
-    for (int i = 0; i < sectors.length; i++)
-    {
-      if (sectors[i] != null && sectors[i].lfsr_of_bad_lba_bad)
-        any_bad = true;
-    }
-
-    return any_bad;
-  }
-
-  public void reReadSectors()
-  {
-    for (int i = 0; i < sectors.length; i++)
-    {
-      if (sectors[i] != null)
-        sectors[i].reReadSector(this);
-    }
-  }
-
-  public static String header()
-  {
-    return String.format("\n%-40s %-6s %8s %-12s", "Lun", "sd", "xfersize", "lba");
-  }
-  public String print()
-  {
-    return String.format("%-40s %-6s %-8d 0x%010x", lun, sd_wanted, xfersize, logical_lba);
-  }
 }
 
 
-class Sector
+
+class DataBlock
 {
-  long   lba_wanted;
-  long   lba_read;
-  String sd_wanted;
-  String sd_read;
-  long   ts;
-  int    key_wanted;
-  int    key_read;
-  int    checksum;
-  int    different_words_in_sector;
-  int    different_bits;
-  int    singlebit_words;
-  Date   timestamp;
-  int[]  expected = new int[128];
-  int[]  was_read = new int[128];
-  int[]  lfsr_sector;
-  int[]  re_read;
-  boolean  lfsr_of_bad_lba_bad = false;
-
-
-  /**
-   * Count how many words (32bits) are different in this sector.
-   * We are only looking beyond the first 32 bytes.
-   */
-  public int countDifferences()
-  {
-    different_words_in_sector = 0;
-
-    /* Look only beyond byte 32: */
-    for (int i = 8; i < expected.length; i++)
-    {
-      int expd = expected[i];
-      int read = was_read[i];
-
-      /* Ignore timestamp: */
-      if (i == 2 || i == 3)
-        continue;
-
-      /* Ignore checksum: */
-      if (i == 4)
-      {
-        expd &= 0xff00ffff;
-        read &= 0xff00ffff;
-      }
-
-      /* Ignore bad SD name: */
-      if ((i == 5 || i == 6) && !sd_wanted.equals(sd_read))
-        continue;
-      if (expd != read)
-      {
-        different_words_in_sector++;
-
-        /* Count miscomparing bits and how often we just have one single bit error: */
-        int bits = countBits(expd, read);
-        different_bits += bits;
-        if (bits == 1)
-        {
-          singlebit_words++;
-        }
-      }
-    }
-
-    //if (different_words != 0)
-    // DVPost.print("different_words: " + different_words + " bits: " + different_bits);
-    //
-    //common.ptod("different_words_in_sector: " + different_words_in_sector);
-    return different_words_in_sector;
-  }
-
-  private int countBits(int word1, int word2)
-  {
-    int bits = 0;
-    int w1 = word1;
-    int w2 = word2;
-    for (int i = 0; i < 32; i++)
-    {
-      if ((w1 & 1) != (w2 & 1))
-        bits++;
-      w1 >>>= 1;
-      w2 >>>= 1;
-    }
-
-    //if (bits == 1)
-    //  DVPost.print("countBits: %08x %08x %08x %d", lba_wanted, word1, word2, bits);
-
-    return bits;
-  }
-
-  /**
-   * Get the data pattern that goes with the BAD lba that we read.
-   */
-  public void getBadLbaData()
-  {
-    /* Allocate memory for what we want to do: */
-    lfsr_sector = new int[512/4];
-
-    /* Create an LFSR array using this data, sd name must be 8 bytes: */
-    Native.fillLFSR(lfsr_sector, lba_read, key_read, check8byteString(sd_read));
-
-    /* Now compare that data so that we can report discrepancies: */
-    for (int i = 8; i < 512/4; i++)
-    {
-      if (was_read[i] != lfsr_sector[i])
-      {
-        lfsr_of_bad_lba_bad = true;
-      }
-    }
-    //common.ptod("lfsr_of_bad_lba_bad: " + lfsr_of_bad_lba_bad + " " + key_read);
-  }
-
-
-  /**
-   * An attempt to immediately re-read the bad sector and validate it again.
-   */
-  public void reReadSector(BadBlock bb)
-  {
-    Vector lines = new Vector(64);
-
-    long handle = Native.openFile(bb.lun);
-    if (handle < 0)
-      common.failure("Can't open disk file");
-
-    long data_buffer = Native.allocBuffer(512);
-    int[] data_array = new int[512 / 4];
-
-    common.ptod("lba_wanted: " + lba_wanted);
-    common.ptod("bb.file_start_lba: " + bb.file_start_lba);
-    long rc = Native.readFile(handle, lba_wanted - bb.file_start_lba, 512, data_buffer);
-    if (rc != 0)
-      common.failure("Error reading block");
-    Native.closeFile(handle);
-
-    Native.buffer_to_array(data_array, data_buffer, 512);
-
-    Native.freeBuffer(512, data_buffer);
-
-    int[] return_array = new int[128];
-    System.arraycopy(data_array, 0, return_array, (32/4), data_array.length);
-
-    re_read = return_array;
-  }
-
-
-  /**
-   * Check the content of the input String and return "garbage " if this
-   * is not a valid String.
-   * Note: String is first mad 8 bytes long.
-   */
-  public static String check8byteString(String str)
-  {
-    String string = (str + "        ").substring(0,8);
-    for (int i = 0; i < string.length(); i++)
-    {
-      if (!Character.isDigit(string.charAt(i)))
-        return "garbage ";
-    }
-    return string;
-  }
+  String lun;
+  long   logical_lba;
+  int    data_xfersize;
+  int    key_blocksize;
+  String failure;
 }
-
-
-

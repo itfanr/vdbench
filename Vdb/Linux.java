@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -38,8 +20,8 @@ import Utils.Format;
  */
 public class Linux
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private static long    ticks_per_second;
   private static boolean first_time = true;
@@ -107,47 +89,25 @@ public class Linux
 
   /**
    * Get the CPU tick count.
-   * For some reason I could not use the same executable for suse and linux_host,
-   * so therefore I have two separate files.
    */
   private static boolean getTickCount()
   {
-    OS_cmd ocmd = new OS_cmd();
-    ocmd.addText(ClassPath.classPath("linux/linux_clock.suse"));
-    ocmd.setStdout();
-    ocmd.setStderr();
-    ocmd.execute();
-
-    if (!ocmd.getRC())
+    String arch = System.getProperty("os.arch");
+    if (arch.equals("ppc64") || arch.equals("ppc64"))
     {
-      common.ptod("Error running " + ocmd.getCmd() + "; trying redhat");
-      ocmd = new OS_cmd();
-      ocmd.addText(ClassPath.classPath("linux/linux_clock.redhat"));
-      ocmd.setStdout();
-      ocmd.setStderr();
-      ocmd.execute();
+      ticks_per_second = 100;
+      common.ptod("getTickCount(): set to 100 for PPC");
+      return true;
     }
 
-    String[] stdout = ocmd.getStdout();
-    String[] stderr = ocmd.getStderr();
-    if (stdout.length != 1)
+    ticks_per_second = Native.getTickCount();
+    if (ticks_per_second <= 0)
     {
-      for (int i = 0; i < stdout.length; i++)
-        common.ptod("linux_clock stdout: " + stdout[0]);
-      for (int i = 0; i < stderr.length; i++)
-        common.ptod("linux_clock stderr: " + stderr[0]);
-      disable("Unexpected return values from 'linux_clock'; Linux processing disabled");
-      return false;
+      common.ptod("Error retrieving tick count: %d. Setting to 100", ticks_per_second);
+      ticks_per_second = 100;
+      return true;
     }
 
-    String[] split = stdout[0].split(" +");
-    if (split.length != 2)
-    {
-      disable("Unexpected return values from 'linux_clock'; Linux processing disabled");
-      return false;
-    }
-
-    ticks_per_second = Long.parseLong(split[1]);
     common.plog("ticks_per_second: " + ticks_per_second);
 
     return true;
@@ -211,11 +171,13 @@ public class Linux
   }
 
 
-  public static long getLinuxSize(String rawname)
+  public static long getLinuxSize(String in_name)
   {
+    String rawname = in_name;
     String line = null;
     try
     {
+      rawname = Kstat_data.translateSoftLink(rawname);
       String[] lines = Fget.readFileToArray("/proc/partitions");
       for (int i = 0; i < lines.length; i++)
       {
@@ -248,15 +210,16 @@ public class Linux
       common.ptod(e);
     }
 
+    common.ptod("Unable to find lun size for %s (%s): ", in_name, rawname);
     return 0;
   }
 
 
   public static void main(String[] args)
   {
-    double size = getLinuxSize(args[0]);
-    common.ptod(Format.f("size: %.6f", size));
-    common.ptod(Format.f("size: %.6f", (size / 1000000000.)));
+    long size = getLinuxSize(args[0]);
+    common.ptod("size: %,12d bytes", size);
+    common.ptod("size: %.3fg %.3fg", (size / 1000000000.), (size / (1024*1024*1024.)));
   }
 }
 

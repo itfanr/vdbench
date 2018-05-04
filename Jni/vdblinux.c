@@ -1,24 +1,7 @@
 
 
 /*
- * Copyright (c) 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
 
 
@@ -28,11 +11,11 @@
 
 
 //# define _LARGEFILE_SOURCE
-# define _LARGEFILE64_SOURCE
-# define _FILE_OFFSET_BITS 64
+#define _LARGEFILE64_SOURCE
+#define _FILE_OFFSET_BITS 64
 
 
-#include <jni.h>
+#include "vdbjni.h"
 #include <fcntl.h>
 #include <stdio.h>
 #include <errno.h>
@@ -42,14 +25,18 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <features.h>
-#include "vdbjni.h"
 
-#ifdef LINUX
 #include <stdint.h>
-#endif
+#include <string.h>
 
 extern struct Shared_memory *shared_mem;
-char ptod_txt[256]; /* workarea for PTOD displays
+char ptod_txt[256]; /* workarea for PTOD displays   */
+
+
+static char c[] =
+"Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
+
+
 
 /*                                                                            */
 /* I have not been able to figure out yet how to get a size for raw files!    */
@@ -67,9 +54,9 @@ extern jlong file_size(JNIEnv *env, jlong fhandle, const char* fname)
   rc = fstat(fhandle, &xstat);
   if (rc < 0)
   {
-    sprintf(ptod_txt, "file_size(), fstat %s failed: %s\n", fname, strerror(errno));
-    PTOD(ptod_txt);
-    ABORT(ptod_txt, "xx");
+    PTOD1("file_size(), fstat %s failed", fname);
+    PTOD1("error: %d", errno);
+    ABORT("file_size(), fstat %s failed", fname);
   }
 
   //printf("fsize: %lld\n", xstat.st_size  );
@@ -101,8 +88,8 @@ extern jlong file_open(JNIEnv *env, const char *filename, int open_flags, int fl
   fd = open64(filename, (access_type), 0666);
   if ( fd == -1 )
   {
-    sprintf(ptod_txt, "file_open(), open for '%s' failed: %s", filename, strerror(errno));
-    PTOD(ptod_txt);
+    PTOD1("error: %d", errno);
+    PTOD1("file_open(), open %s failed", filename);
     return -1;
   }
 
@@ -115,8 +102,18 @@ extern jlong file_open(JNIEnv *env, const char *filename, int open_flags, int fl
 /*                                                                            */
 extern jlong file_close(JNIEnv *env, jlong fhandle)
 {
-  //printf("I have just entered file_close.\n");
-  return (jlong) close((int) fhandle);
+  int rc = close((int) fhandle);
+  if (rc == -1)
+  {
+    if (errno == 0)
+    {
+      PTOD("Errno is zero after a failed close. Setting to 799");
+      return 799;
+    }
+    return errno;
+  }
+
+  return 0;
 }
 
 
@@ -125,6 +122,9 @@ extern jlong file_close(JNIEnv *env, jlong fhandle)
 /*                                                                            */
 extern jlong file_read(JNIEnv *env, jlong fhandle, jlong seek, jlong length, jlong buffer)
 {
+  /* Set fixed values at start and end of buffer: */
+  prepare_read_buffer(env, buffer, length);
+
   int rc = pread64((int) fhandle, (void*) buffer, (size_t) (int) length, (off64_t) seek);
 
   if (rc == -1)
@@ -139,14 +139,13 @@ extern jlong file_read(JNIEnv *env, jlong fhandle, jlong seek, jlong length, jlo
 
   else if (rc != length)
   {
-    sprintf(ptod_txt, "Invalid byte count. Expecting %lld, but read only %d bytes. ",
-            length, rc);
-    PTOD(ptod_txt);
-    PTOD("Returning ENOENT");
-    return ENOENT;
+    PTOD1("Invalid byte count. Expecting %lld", length);
+    PTOD1("but read only %d bytes.", rc);;
+    return 798;
   }
 
-  return 0;
+  /* Make sure read was REALLY OK: */
+  return check_read_buffer(env, buffer, length);
 }
 
 
@@ -169,11 +168,9 @@ extern jlong file_write(JNIEnv *env, jlong fhandle, jlong seek, jlong length, jl
 
   else if (rc != length)
   {
-    sprintf(ptod_txt, "Invalid byte count. Expecting %lld, but wrote only %d bytes. ",
-            length, rc);
-    PTOD(ptod_txt);
-    PTOD("Returning ENOENT");
-    return ENOENT;
+    PTOD1("Invalid byte count. Expecting %lld", length);
+    PTOD1("but wrote only %d bytes.", rc);;
+    return 798;
   }
 
   return 0;
@@ -185,19 +182,9 @@ extern jlong file_write(JNIEnv *env, jlong fhandle, jlong seek, jlong length, jl
 /*                                                                            */
 extern jlong alloc_buffer(JNIEnv *env, int bufsize)
 {
-  void *buffer;
+  void *buffer = (void*) valloc(bufsize);
 
-  buffer = (void*) valloc(bufsize);
-  if ( buffer == NULL )
-  {
-    sprintf(ptod_txt, "get_buffer() for %d bytes failed\n", bufsize);
-    PTOD(ptod_txt);
-    abort();
-  }
-
-
-
-  return (jlong) buffer;
+  return(jlong) buffer;
 }
 
 
@@ -210,22 +197,61 @@ extern void free_buffer(int bufsize, jlong buffer)
   free((void*) buffer);
 }
 
-/*                                                                            */
-/* Simple time of day: does not have to be an accurate current tod,           */
-/* as long as it can be used for tod delta calculations.                      */
-/*                                                                            */
+/**
+ * Simple time of day: does not have to be an accurate current tod, as long as
+ * it can be used for tod delta calculations.
+ */
 extern jlong get_simple_tod(void)
 {
-  jlong tod;
-  struct timeval tv;
+  static int monotonic_checked = 0;
+  static int monotonic_works   = 0;
 
-  //printf("I have just entered get_simple_tod.\n");
+  struct timeval   tv;
+  struct timespec  time;
+  jlong  tod;
+  long   check_rc;
+  size_t nsecs;
+
+  #ifndef PPC
+
+  /* Check to see if we can use this call: */
+  /* From: kishore.kumar.pusukuri@oracle.com */
+  if (!monotonic_checked)
+  {
+    monotonic_checked = 1;
+    check_rc = clock_gettime(CLOCK_MONOTONIC, &time);
+    if (check_rc == 0)
+    {
+      monotonic_works = 1;
+      //printf("clock_gettime(CLOCK_MONOTONIC) works. \n");
+    }
+    else
+      printf("clock_gettime(CLOCK_MONOTONIC) does not work. Using gettimeofday() instead: %d %s\n", errno, strerror(errno));
+  }
+
+  if (monotonic_works)
+  {
+    /* Not sure it works everywhere: */
+    clock_gettime(CLOCK_MONOTONIC, &time);
+    size_t nsecs = (time.tv_sec * 1e9 + time.tv_nsec);
+    return nsecs / 1000;
+  }
+  else
+  {
+    /* Portable: */
+    gettimeofday(&tv, NULL);
+    tod = ((jlong)tv.tv_sec * 1000000) + (unsigned) tv.tv_usec;
+    return tod ;
+  }
+
+  #else
 
   /* Portable: */
   gettimeofday(&tv, NULL);
   tod = ((jlong)tv.tv_sec * 1000000) + (unsigned) tv.tv_usec;
-
   return tod ;
+
+  #endif
 }
 
 
@@ -264,3 +290,26 @@ JNIEXPORT jint JNICALL Java_Vdb_Native_eraseFileSystemCache(JNIEnv *env,
   }
   return(ret);
 }
+
+
+/**
+ * Experiment creating sparse files:
+ */
+JNIEXPORT jlong JNICALL Java_Vdb_Native_truncateFile(JNIEnv *env,
+                                                     jclass  this,
+                                                     jlong   handle,
+                                                     jlong   filesize)
+{
+  jlong rc = ftruncate((int) handle, (off_t) filesize);
+  if (rc)
+  {
+    int error = errno;
+    PTOD1("ftruncate error. Handle: %lld", handle);
+    PTOD1("ftruncate error. Size:   %lld", filesize);
+    PTOD1("ftruncate error. rc:     %d", rc);
+    PTOD1("ftruncate error. errno:  %d"  , error);
+    return error;
+  }
+  return 0;
+}
+

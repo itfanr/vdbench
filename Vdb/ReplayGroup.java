@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -32,23 +14,20 @@ import Utils.printf;
 import java.io.*;
 
 
-class ReplayGroup extends VdbObject implements Serializable
+class ReplayGroup implements Serializable
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.";
 
+  private String  group_name;
+  private Vector  device_list       = new Vector(8,0);
+  private double  total_group_bytes = 0;
+  private boolean reporting_only    = false;
+  private long    bytes_needed;
 
-  public String  group_name;
-  public Vector  device_list       = new Vector(8,0);
-  transient public Vector  sds_in_this_group = new Vector(8,0);
-  public double  total_group_bytes = 0;
-  public boolean reporting_only    = false;
-  public long    bytes_needed;
+  transient private Vector  sds_in_this_group = new Vector(8,0);
 
-  /* List of all existing groups: */
-  private static Vector group_list           = new Vector(16, 0);
-
-  public static ReplayGroup reporting_group = new ReplayGroup();
+  private static ReplayGroup reporting_group = new ReplayGroup();
 
 
   static double GB = 1024. * 1024. * 1024.;
@@ -63,6 +42,7 @@ class ReplayGroup extends VdbObject implements Serializable
   }
   public ReplayGroup(String name)
   {
+    Vector group_list = ReplayInfo.getGroupList();
     for (int i = 0; i < group_list.size(); i++)
     {
       ReplayGroup group = (ReplayGroup) group_list.elementAt(i);
@@ -74,13 +54,29 @@ class ReplayGroup extends VdbObject implements Serializable
     group_list.addElement(this);
   }
 
-  public static Vector getGroupList()
+  public String getName()
   {
-    return group_list;
+    return group_name;
   }
-  public static void setGroupList(Vector list)
+  public boolean isReportingOnly()
   {
-    group_list = list;
+    return reporting_only;
+  }
+  public static ReplayGroup getReportingOnlyGroup()
+  {
+    return reporting_group;
+  }
+
+  public ReplayGroup findGroup(String name)
+  {
+    Vector group_list = ReplayInfo.getGroupList();
+    for (int i = 0; i < group_list.size(); i++)
+    {
+      ReplayGroup group = (ReplayGroup) group_list.elementAt(i);
+      if (group.group_name.equals(name))
+        return group;
+    }
+    return null;
   }
 
 
@@ -90,7 +86,7 @@ class ReplayGroup extends VdbObject implements Serializable
   }
 
 
-  public Vector getSDList()
+  public Vector getSdList()
   {
     return sds_in_this_group;
   }
@@ -119,8 +115,9 @@ class ReplayGroup extends VdbObject implements Serializable
   /**
    * Add an SD to a named group
    */
-  public static void addSD(SD_entry sd, String grp)
+  public static void addSDGroup(SD_entry sd, String grp)
   {
+    Vector group_list = ReplayInfo.getGroupList();
     for (int i = 0; i < group_list.size(); i++)
     {
       ReplayGroup group = (ReplayGroup) group_list.elementAt(i);
@@ -141,12 +138,17 @@ class ReplayGroup extends VdbObject implements Serializable
   public static void calculateGroupSDSizes(Vector sd_list)
   {
     /* Check all groups: */
+    Vector group_list = ReplayInfo.getGroupList();
     for (int i = 0; i < group_list.size(); i++)
     {
       ReplayGroup group = (ReplayGroup) group_list.elementAt(i);
 
       if (group.sds_in_this_group.size() == 0)
+      {
+        common.ptod("No SDs found for replay group: " + group.group_name);
+        common.ptod("Did you possibly use both replay groups and replay devices in the SD?");
         common.failure("No SDs found for replay group: " + group.group_name);
+      }
 
       /* Check all SDs in this group: */
       for (int j = 0; j < group.sds_in_this_group.size(); j++)
@@ -169,6 +171,7 @@ class ReplayGroup extends VdbObject implements Serializable
     boolean bad_one = false;
 
     /* Check all groups: */
+    Vector group_list = ReplayInfo.getGroupList();
     for (int i = 0; i < group_list.size(); i++)
     {
       ReplayGroup group = (ReplayGroup) group_list.elementAt(i);
@@ -181,7 +184,7 @@ class ReplayGroup extends VdbObject implements Serializable
       for (int j = 0; j < group.device_list.size(); j++)
       {
         ReplayDevice rdev = (ReplayDevice) group.device_list.elementAt(j);
-        group.bytes_needed += rdev.max_lba;
+        group.bytes_needed += rdev.getMaxLba();
       }
 
       if (group.bytes_needed > group.total_group_bytes)
@@ -195,7 +198,7 @@ class ReplayGroup extends VdbObject implements Serializable
       }
     }
 
-    if (bad_one)
+    if (bad_one && !common.get_debug(common.IGNORE_MISSING_REPLAY))
       common.failure("Not every replay group has enough lun space available");
   }
 }

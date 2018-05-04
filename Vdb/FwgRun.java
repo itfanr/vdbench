@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -37,8 +19,8 @@ import Utils.OS_cmd;
  */
 class FwgRun
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private static Vector threads_started = null;
 
@@ -118,12 +100,20 @@ class FwgRun
     /* simply can reuse the previous content of that anchor:               */
     for (int i = 0; i < fwgs_for_slave.size(); i++)
     {
+      long start = System.currentTimeMillis();
       FwgEntry fwg = (FwgEntry) fwgs_for_slave.elementAt(i);
+      common.ptod("Starting initializeFileAnchor for %s", fwg.fsd_name);
+      //SlaveJvm.sendMessageToConsole("Starting initializeFileAnchor for %s", fwg.fsd_name);
       fwg.anchor.initializeFileAnchor(fwg);
 
       /* If there is a target anchor for copy/move, initialize that also: */
       if (fwg.target_anchor != null)
         fwg.target_anchor.initializeFileAnchor(fwg);
+
+      common.ptod("Completed initializeFileAnchor for %s: %.2f",
+                  fwg.fsd_name, (System.currentTimeMillis() - start) / 1000.);
+      //SlaveJvm.sendMessageToConsole("Completed initializeFileAnchor for %s: %.2f",
+      //                              fwg.fsd_name, (System.currentTimeMillis() - start) / 1000.);
     }
 
     /* Send message to master telling him we're done building file structure: */
@@ -195,6 +185,7 @@ class FwgRun
         else if (operation == Operations.WRITE)   ft = new OpWrite(task,     fwg);
         else if (operation == Operations.GETATTR) ft = new OpGetAttr(task,   fwg);
         else if (operation == Operations.SETATTR) ft = new OpSetAttr(task,   fwg);
+        else if (operation == Operations.ACCESS)  ft = new OpAccess(task,    fwg);
         else if (operation == Operations.OPEN)    ft = new OpOpen(task,      fwg);
         else if (operation == Operations.CLOSE)   ft = new OpClose(task,     fwg);
         else if (operation == Operations.DELETE)  ft = new OpDelete(task,    fwg);
@@ -210,10 +201,18 @@ class FwgRun
         threads_started.add(ft);
       }
 
-      common.ptod("Started " + fwg.threads + " threads for " +
-                  "fwd=" + fwg.getName() + ",fsd=" + fwg.fsd_name +
-                  ",operation=" +
-                  Operations.getOperationText(fwg.getOperation()));
+      if (!work.format_run)
+      {
+        common.ptod("Started " + fwg.threads + " threads for " +
+                    "fwd=" + fwg.getName() + ",fsd=" + fwg.fsd_name +
+                    ",operation=" +
+                    Operations.getOperationText(fwg.getOperation()));
+      }
+      else
+      {
+        common.ptod("Started " + fwg.threads + " threads for " +
+                    "fwd=" + fwg.getName() + ",fsd=" + fwg.fsd_name);
+      }
     }
 
     common.plog("Started " + starts + " FwgThreads");
@@ -223,7 +222,7 @@ class FwgRun
   /**
    * Calculate skew and/or spread unrequested skew around if no skew defined
    */
-  private static void calcSkew(Vector fwgs_for_rd)
+  public static void calcSkew(Vector fwgs_for_rd)
   {
     double tot_skew = 0;
     double remainder;
@@ -257,15 +256,8 @@ class FwgRun
       }
     }
 
-    /* Skew must be close to 100% (floating point allows just a little off): */
-    if (fwgs_for_rd.size() != 0)
-    {
-      if ((tot_skew < 99.9999) || (tot_skew > 100.0001))
-        common.failure("Total skew must add up to 100: " + tot_skew);
-    }
 
-
-    for (int i = 0; i < fwgs_for_rd.size(); i++)
+    for (int i = 999990; i < fwgs_for_rd.size(); i++)
     {
       FwgEntry fwg = (FwgEntry) fwgs_for_rd.elementAt(i);
       common.plog("Skew for fwd=" + fwg.getName() +
@@ -273,6 +265,14 @@ class FwgRun
                   Format.f(",operation=%-8s ", Operations.getOperationText(fwg.getOperation()) +
                            ":") + fwg.skew);
     }
+
+    /* Skew must be close to 100% (floating point allows just a little off): */
+    if (fwgs_for_rd.size() != 0)
+    {
+      if ((tot_skew < 99.9999) || (tot_skew > 100.0001))
+        common.failure("Total skew must add up to 100: " + tot_skew);
+    }
+
   }
 
 
@@ -301,6 +301,17 @@ class FwgRun
     {
       anchors[i].mkdir_threads_running  = new FormatCounter(threads[i].intValue());
       anchors[i].create_threads_running = new FormatCounter(threads[i].intValue());
+    }
+
+  }
+
+
+  // debugging
+  public static void endOfRun(Work work)
+  {
+    for (FwgEntry fwg : work.fwgs_for_slave)
+    {
+      fwg.anchor.endOfRun();
     }
 
   }

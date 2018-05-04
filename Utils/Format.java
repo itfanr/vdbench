@@ -1,26 +1,8 @@
 package Utils;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -39,8 +21,8 @@ import java.text.DecimalFormatSymbols;
  */
 public class Format
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved.";
 
   /*                                           15              6          */
   static DecimalFormat df = new DecimalFormat("##############0.000000");
@@ -181,13 +163,13 @@ public class Format
           type = chars.charAt(i);
           if (type == 'X')
             longhex = true;
-        else if (type != 'f' && type != 'F' && type != 'd' && type != 'x' && type != 's')
+          else if (type != 'f' && type != 'F' && type != 'd' && type != 'x' && type != 's')
             common.failure("Invalid format string: " + form + "/" + type);
 
           if (left && type != 's')
             common.failure("left adjust only allowed for strings: '" + form + "'");
 
-        if (type == 'f' || type == 'F' || type == 'd')
+          if (type == 'f' || type == 'F' || type == 'd')
           {
 
             //common.ptod("value: " + value + " form: " + form + " length: " + length + " lengthd: " + lengthd + " number: " + number);
@@ -219,14 +201,23 @@ public class Format
             if (j != formatted.length())
               formatted = front.substring(0,j) + formatted.substring(j);
 
-          //common.ptod("length: " + length);
-          //common.ptod("lengthd: " + lengthd);
-          //common.ptod("formatted: >" + formatted + "<");
-          //common.ptod("number: " + number);
+            //common.ptod("length: " + length);
+            //common.ptod("lengthd: " + lengthd);
+            //common.ptod("formatted: >" + formatted + "<");
+            //common.ptod("number: " + number);
 
-          //common.ptod("type: " + type);
-          if (type == 'F' && formatted.length() > length + lengthd + 1)
-            formatted = fitIt(formatted, length, lengthd);
+            //common.ptod("type: " + type);
+            if (type == 'F' && formatted.length() > length + lengthd + 1)
+              formatted = fitIt(formatted, length, lengthd);
+
+            /* Issues with Double.NaN. Change ? to Nan: */
+            /* Don't know if this covers it all though ..... */
+            //Vdb.common.ptod("formatted1: >>>%s<<< %02x", formatted, (int) formatted.charAt(0));
+            if (formatted.charAt(0) == 0xfffd)
+            {
+              formatted = String.format("%" + (length + lengthd + 1) + "s", "NaN");
+              //Vdb.common.ptod("formatted2: >>>%s<<<", formatted);
+            }
 
             out.append(formatted);
 
@@ -411,6 +402,10 @@ public class Format
 
   public static void main(String args[])
   {
+    int field = 0xd894b1a4;
+    //field = 0x7fffffff;
+    common.ptod(Integer.toHexString(field) +  Format.f(" hex: %08X", field));
+    //common.ptod(Long.toHexString(field) +  Format.f(" hex: %12X", field));
   }
 
 }

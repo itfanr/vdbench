@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -35,8 +17,8 @@ package Vdb;
  */
 public class Validate implements java.io.Serializable
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private boolean journal_active     = false;
   private boolean journal_flush      = true;
@@ -46,28 +28,55 @@ public class Validate implements java.io.Serializable
   private boolean journal_recovered  = false;
 
   private boolean validate           = false;
+  private boolean for_dedup          = false;
   private boolean validate_immed     = false;
   private boolean validate_nopreread = false;
   private boolean validate_time      = false;
 
-  private int     force_error_after  = Integer.MAX_VALUE;
-  private int     force_error_count  = 1;
+  private boolean continue_old_map   = false;
+  private boolean ignore_zero_reads  = false;
+  private boolean skip_data_read     = false;
+
+  private boolean ignore_pending     = false;
 
   private int     maximum_dv_wait    = 0;
   private int     maximum_dv_errors  = 50;
   private String  dv_error_cmd       = null;
   private String  output_dir         = null;
 
-  private double  compression        = -1;
+  private double  compression        = 1;
+  private boolean compression_used   = false;
   private long    compression_seed   = 0;
 
-  private double  dedup_rate         = 0;      /* 0 means no deduping */
-  private int     dedup_sets         = 0;
-  private int     dedup_place        = 0;
-  private long    dedup_seed         = 0;
+  private int[]   psrset             = new int[0];
 
+  private boolean sd_concatenation   = false;
+  private double  abort_failed_skew  = Double.MAX_VALUE;
 
-  private static Validate options    = new Validate();
+  private boolean dedup              = false;
+  private int     dedup_unit         = 0;
+
+  private boolean showlba            = false;
+
+  private int patt_mb = 1;  /* Initial default. Probably should change */
+
+  public static int FLAG_VALIDATE        = 0x0001;
+  public static int FLAG_DEDUP           = 0x0002;
+  public static int FLAG_COMPRESSION     = 0x0004;
+  public static int FLAG_SPARE           = 0x0008;
+  public static int FLAG_VALIDATE_NORMAL = 0x0010;
+  public static int FLAG_VALIDATE_DEDUP  = 0x0020;
+  public static int FLAG_VALIDATE_COMP   = 0x0040;
+  public static int FLAG_USE_PATTERN_BUF = 0x0080;   // no longer needed/used
+  public static int FLAG_NORMAL_READ     = 0x0100;
+  public static int FLAG_PRE_READ        = 0x0200;
+  public static int FLAG_READ_IMMEDIATE  = 0x0400;
+  public static int FLAG_PENDING_READ    = 0x0800;
+  public static int FLAG_PENDING_REREAD  = 0x1000;
+
+  public static String REMOVE_DEVICE_OPTION = "remove_device";
+
+  private static Validate options  = new Validate();
 
 
   /**
@@ -82,14 +91,38 @@ public class Validate implements java.io.Serializable
     return options;
   }
 
-  public static void setForceError(int after, int count)
+  /**
+   * This is a generic 'all or nothing' dedup setting.
+   * We don't allow some SDs with and some SDs without debug.
+   * Of course, someone can specify dedupratio=1 to make that SD non-dedup
+   * space-wise but not code-wise.
+   */
+  public static void setDedup()
   {
-    options.force_error_after = after;
-    options.force_error_count = count;
+    options.dedup = true;
   }
-  public static boolean attemptForcedError()
+  public static boolean isDedup()
   {
-    return options.force_error_after != Integer.MAX_VALUE;
+    return options.dedup;
+  }
+  public static void setDedupUnit(int u)
+  {
+    options.dedup_unit = u;
+  }
+  public static int getDedupUnit()
+  {
+    return options.dedup_unit;
+  }
+
+  public static void setValidateOptionsForDedup()
+  {
+    if (!isValidate())
+    {
+      setValidate();
+      setValidateForDedup();
+      setNoPreRead();
+      options.ignore_zero_reads = true;
+    }
   }
 
 
@@ -110,6 +143,34 @@ public class Validate implements java.io.Serializable
     options.journal_rec_only = true;
   }
 
+  private long journal_max = Long.MAX_VALUE;
+  public static void setJournalMax(long max)
+  {
+    options.journal_max = max;
+  }
+  public static long getMaxJournal()
+  {
+    return options.journal_max;
+  }
+
+  public static void setSkipRead()
+  {
+    options.skip_data_read = true;
+  }
+  public static boolean skipRead()
+  {
+    return options.skip_data_read;
+  }
+
+  public static void setIgnorePending()
+  {
+    options.ignore_pending = true;
+  }
+  public static boolean ignorePending()
+  {
+    return options.ignore_pending;
+  }
+
   /**
    * This will be reset to 'false' only when using the -l execution parameter to
    * allow for continued testing in a loop.
@@ -120,23 +181,63 @@ public class Validate implements java.io.Serializable
   }
   public static void setValidate()
   {
+    if (Vdbmain.loop_all_runs && Validate.isJournalRecovery())
+      common.failure("The '-l nnn' (loop) parameter is not allowed together with journal recovery.");
     options.validate = true;
+  }
+  public static void setValidateForDedup()
+  {
+    options.for_dedup = true;
+  }
+
+
+  /**
+   * Return 'true' if this is data validation ONLY for dedup.
+   * If REAL DV is active, return 'false'
+   */
+  public static boolean isValidateForDedup()
+  {
+    return options.for_dedup;
+  }
+
+  public static boolean isRealValidate()
+  {
+    return (isValidate() && !isValidateForDedup());
   }
   public static void setImmediateRead()
   {
     options.validate_immed = true;
   }
+
   public static void setNoPreRead()
   {
     options.validate_nopreread = true;
   }
+  public static boolean isNoPreRead()
+  {
+    return options.validate_nopreread;
+  }
+
   public static void setStoreTime()
   {
     options.validate_time = true;
   }
+  public static boolean isStoreTime()
+  {
+    return options.validate_time;
+  }
+
   public static void setMapOnly()
   {
     options.journal_maponly = true;
+  }
+  public static boolean isMapOnly()
+  {
+    return options.journal_maponly;
+  }
+  public static void setContinueOldMap()
+  {
+    options.continue_old_map = true;
   }
 
 
@@ -175,17 +276,9 @@ public class Validate implements java.io.Serializable
   {
     return options.validate_immed;
   }
-  public static boolean isNoPreRead()
+  public static boolean isContinueOldMap()
   {
-    return options.validate_nopreread;
-  }
-  public static boolean isStoreTime()
-  {
-    return options.validate_time;
-  }
-  public static boolean isMapOnly()
-  {
-    return options.journal_maponly;
+    return options.continue_old_map;
   }
 
   public static int getMaxErrorWait()
@@ -194,7 +287,23 @@ public class Validate implements java.io.Serializable
   }
   public static String getErrorCommand()
   {
-    return options.dv_error_cmd;
+    if (options.dv_error_cmd == null)
+      return null;
+
+    if (options.dv_error_cmd.equals(REMOVE_DEVICE_OPTION))
+      return null;
+    else
+      return options.dv_error_cmd;
+  }
+  public static boolean removeAfterError()
+  {
+    if (options.dv_error_cmd == null)
+      return false;
+
+    if (options.dv_error_cmd.equals(REMOVE_DEVICE_OPTION))
+      return true;
+    else
+      return false;
   }
   public static int getMaxErrorCount()
   {
@@ -210,17 +319,37 @@ public class Validate implements java.io.Serializable
     return options.output_dir;
   }
 
-  public static void setCompression(double d)
+  public static void setCompressionRatio(double d)
   {
     options.compression = d;
+    options.compression_used = true;
   }
   public static void setCompSeed(long l)
   {
     options.compression_seed = l;
   }
-  public static double getCompression()
+  public static double getCompressionRatio()
   {
     return options.compression;
+  }
+  public static boolean isCompressionRequested()
+  {
+    return options.compression_used;
+  }
+
+  // A lot of calls can be removed since we now ALWAYS have compression turned on
+  // with as default compratio=1
+  // I'll clean this up s o m e   t i m e
+  public static boolean isCompression()
+  {
+    boolean rc = options.compression != -1;
+    if (!rc)
+      common.failure("Compression should ALWAYS be on");
+    return options.compression != -1;
+  }
+  public static boolean ignoreZeroReads()
+  {
+    return options.ignore_zero_reads;
   }
 
   public static long getCompSeed()
@@ -228,74 +357,17 @@ public class Validate implements java.io.Serializable
     return options.compression_seed;
   }
 
-  public static void setDedupRate(double d)
+  public static void setPatternMB(int mult)
   {
-    options.dedup_rate = d;
+    options.patt_mb = mult;
+    if (mult <= 0)
+      common.failure("Invalid 'pattern_buffer=%d' size, must be MB. ", mult);
   }
-  public static double getDedupRate()
+  public static int getPatternMB()
   {
-    return options.dedup_rate;
-  }
-  public static int getDedupSets()
-  {
-    return options.dedup_sets;
-  }
-  public static int getDedupPlace()
-  {
-    return options.dedup_place;
-  }
-  public static void setDedupSeed(long l)
-  {
-    options.dedup_seed = l;
-  }
-  public static long getDedupSeed()
-  {
-    return options.dedup_seed;
+    return options.patt_mb;
   }
 
-  /**
-   * Method to force one error during data validation.
-   *
-   * This is kinda confusion, so here goes:
-   * Using 'force_error_after' forces a Data Validation error.
-   * Add to this common.DV_DEBUG_WRITE_ERROR, and this will be
-   * replaced by a write error.
-   */
-  public static synchronized boolean forceError(SD_entry sd, FileEntry fe,
-                                                long lba, long xfersize)
-  {
-    //common.ptod("options.force_error_after: " + options.force_error_after + " " + options.force_error_count);
-    /* If we don't have any specified, just return: */
-    if (options.force_error_after == Integer.MAX_VALUE)
-      common.failure("You should always call attemptForcedError() before getting here.");
-
-    /* If we still have to run for a while, return: */
-    if (--options.force_error_after > 0)
-      return false;
-
-    /* We need to generate an error. Have we done enough already? */
-    if (options.force_error_count == 0)
-      return false;
-
-    options.force_error_count--;
-
-    /* Force an error: */
-    String txt;
-    if (sd != null)
-      txt = String.format("Validate.force_error(): Error forced for "+
-                          "sd=%s,lun=%s, lba 0x%08x", sd.sd_name, sd.lun, lba);
-    else
-      txt = String.format("Validate.force_error(): Error forced on file %s "+
-                          "lba 0x%08x xfersize %d", fe.getName(), lba, xfersize);
-
-    common.ptod(txt);
-    common.ptod("options.force_error_after: " + options.force_error_after + " " + options.force_error_count);
-    ErrorLog.sendMessageToMaster(txt);
-    common.ptod("Amount of errors still to force: " + options.force_error_count);
-    ErrorLog.sendMessageToMaster("Amount of errors still to force: " + options.force_error_count);
-
-    return true;
-  }
 
   /**
    * Parse the parameter file's journal options.
@@ -308,7 +380,7 @@ public class Validate implements java.io.Serializable
     {
       String parm = parms[i];
 
-      if ("no".startsWith(parm))
+      if (parm.equals("no"))
       {
         options.journal_active = false;
         return;
@@ -332,6 +404,15 @@ public class Validate implements java.io.Serializable
       else if ("only".compareTo(parm) == 0)
         Validate.setRecoveryOnly();
 
+      else if ("skip_read_all".startsWith(parm))
+        Validate.setSkipRead();
+
+      else if ("ignore_pending".startsWith(parm))
+        Validate.setIgnorePending();
+
+      else if (parm.startsWith("max="))
+        Validate.setJournalMax(common.parseSize(parm.substring(4)));
+
       else
         common.failure("Unknown keyword value for 'journal=': " + parm);
     }
@@ -345,12 +426,22 @@ public class Validate implements java.io.Serializable
     {
       String parm = parms[i];
 
+      /* If we see 'no' anywhere, just turn it off, regardless of other options: */
       if ("no".startsWith(parm))
       {
         options.validate = false;
         return;
       }
 
+      /* This parameter does NOT activate DV (dedup only for now) */
+      if ("continue_old_map".startsWith(parm))
+      {
+        common.failure("'validate=continue' no longer supported");
+        Validate.setContinueOldMap();
+        return;
+      }
+
+      /* ANY validate option turns validation on: */
       Validate.setValidate();
 
       if ("yes".startsWith(parm))
@@ -365,10 +456,14 @@ public class Validate implements java.io.Serializable
       else if ("time".compareTo(parm) == 0)
         Validate.setStoreTime();
 
+      else if ("ignore_zero_reads".startsWith(parm))
+        options.ignore_zero_reads = true;
+
       else
         common.failure("Unknown keyword value for 'validate=': " + parm);
     }
   }
+
 
   public static void parseDataErrors(Vdb_scan prm)
   {
@@ -383,30 +478,104 @@ public class Validate implements java.io.Serializable
     {
       options.maximum_dv_errors = 0;
       options.dv_error_cmd      = prm.alphas[0];
+
+      /* Option to stop using SD after i/o error: */
+      if (REMOVE_DEVICE_OPTION.startsWith(options.dv_error_cmd))
+      {
+        options.dv_error_cmd      = REMOVE_DEVICE_OPTION;
+        options.maximum_dv_errors = 10000;
+        common.ptod("'data_errors=%s' option requested. Max error count set to %d",
+                    REMOVE_DEVICE_OPTION,
+                    options.maximum_dv_errors);
+      }
     }
   }
 
-  public static void parseDedupParms(Vdb_scan prm)
+  /**
+   * These flags determine what kind of data must be placed in each write buffer.
+   * The flags are used in JNI.
+   */
+  public static int createDataFlag()
   {
-    if (prm.keyword.equals("dedupseed"))
-      options.dedup_seed = prm.getLong();
+    int flag = 0;
+    String txt = "";
 
-    else if (prm.keyword.equals("deduprate"))
-      options.dedup_rate = prm.getDouble();
+    /* Different Data Validation options: */
+    if (Validate.isValidate())
+    {
+      flag |= FLAG_VALIDATE;
+      txt  += "FLAG_VALIDATE ";
+      if (Dedup.isDedup())
+      {
+        flag |= FLAG_VALIDATE_DEDUP;       // this flag not used in JNI, but,
+                                           // though not used, the 'else' here
+                                           // won't trigger!
+        txt  += "FLAG_VALIDATE_DEDUP ";
+      }
+      else if (Validate.isCompression())
+      {
+        flag |= FLAG_VALIDATE_COMP;
+        txt  += "FLAG_VALIDATE_COMP ";
+      }
+      else
+      {
+        flag |= FLAG_VALIDATE_NORMAL;
+        txt  += "FLAG_VALIDATE_NORMAL ";
+      }
+    }
 
-    else if (prm.keyword.equals("dedupsets"))
-      options.dedup_sets = prm.getInt();
+    if (Dedup.isDedup())
+    {
+      flag |= FLAG_DEDUP;
+      txt  += "FLAG_DEDUP ";
+    }
 
-    else if (prm.keyword.equals("dedupoffset"))
-      options.dedup_place = prm.getInt();
+    else if (Validate.isCompression())
+    {
+      flag |= FLAG_COMPRESSION;
+      txt  += "FLAG_COMPRESSION ";
+    }
 
-    else
-      common.failure("Invalid parameter: " + prm.keyword);
+    //common.ptod("createDataFlag: %08x %s", flag, txt.toLowerCase());
 
-    if (options.dedup_place < 0 || options.dedup_place > 100)
-      common.failure("Dedup place must be between 0 and 100: " + options.dedup_place);
-    if (options.dedup_rate < 0 || options.dedup_rate > 100)
-      common.failure("Dedup rate must be between 0 and 100: " + options.dedup_rate);
+    return flag;
+  }
+
+
+  public static void setSdConcatenation()
+  {
+    options.sd_concatenation = true;
+  }
+  public static boolean sdConcatenation()
+  {
+    return options.sd_concatenation;
+  }
+
+  public static void setPsrset(int[] set)
+  {
+    options.psrset = set;
+  }
+  public static int[] getPsrset()
+  {
+    return options.psrset;
+  }
+
+  public static void setSkewAbort(double limit)
+  {
+    options.abort_failed_skew = limit;
+  }
+  public static double getSkewAbort()
+  {
+    return options.abort_failed_skew;
+  }
+
+  public static void setShowLba(boolean bool)
+  {
+    options.showlba = bool;
+  }
+  public static boolean showLba()
+  {
+    return options.showlba;
   }
 }
 

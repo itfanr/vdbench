@@ -1,24 +1,7 @@
 
 
 /*
- * Copyright (c) 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
  */
 
 
@@ -27,20 +10,23 @@
  */
 
 
-#include <jni.h>
+#include "vdbjni.h"
 #include <fcntl.h>
 #include <stdio.h>
 #include <errno.h>
 #include <time.h>
 #include <windows.h>
 #include <winioctl.h>
-#include "vdbjni.h"
 
 #include <pdhmsg.h>
 #include <pdh.h>
 #pragma comment(lib, "pdh")
 
+static char c[] =
+  "Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.";
 
+
+extern struct Shared_memory *shared_mem;
 
 #define WINMSG(x)                                                \
 {                                                                \
@@ -68,8 +54,7 @@ struct Query
   (a) = (*env)->GetFieldID(env, cls, #a, "J");      \
   if ((a) == NULL)                                  \
   {                                                 \
-    sprintf(ptod_txt, "Unable to load field ID of %s \n", #a); \
-    PTOD(ptod_txt);                                 \
+    PTOD1("Unable to load field ID of %s \n", #a); \
     abort();                                        \
   }
 
@@ -83,14 +68,13 @@ static int get_query(JNIEnv *env, struct Query *qp, int ignerror)
 
   /* Collect data: */
   qp->prev_tod   = qp->last_tod;
-  qp->last_tod   = get_simple_tod();
+  qp->last_tod   = GET_SIMPLE_TOD();
   qp->delta_tod  = qp->last_tod - qp->prev_tod;
   qp->tod_adjust = (double) qp->delta_tod / 1000000.0;
   rc = PdhCollectQueryData(qp->hquery);
   if (rc != ERROR_SUCCESS )
   {
-    sprintf(ptod_txt, "PCQD failed %08x\n", rc );
-    PTOD(ptod_txt);
+    PTOD1("PCQD failed %08x\n", rc );
     return -1;
   }
 
@@ -102,12 +86,10 @@ static int get_query(JNIEnv *env, struct Query *qp, int ignerror)
     if ( (rc = PdhGetFormattedCounterValue(qp->hcounter[i], PDH_FMT_DOUBLE,
                                            NULL, &qp->rdata[i])) != ERROR_SUCCESS )
     {
-      if ( rc == PDH_CALC_NEGATIVE_VALUE && ignerror)
-        continue;
-      else
+      if (rc == PDH_CALC_NEGATIVE_VALUE)
       {
-        sprintf(ptod_txt, "PGFCV failed %08x (%d,%d)\n", rc, i, qp->counters );
-        PTOD(ptod_txt);
+        if (!ignerror)
+          PTOD3("PGFCV failed %08x (%d,%d)", rc, i, qp->counters );
         continue;
       }
     }
@@ -135,8 +117,7 @@ static struct Query* add_query(JNIEnv *env, PDH_COUNTER_PATH_ELEMENTS cpe[], int
     qp->ordata[i].doubleValue = 0;
   if ( (rc  = PdhOpenQuery(NULL, 0, &qp->hquery)) != ERROR_SUCCESS )
   {
-    sprintf(ptod_txt, "POQ failed %08x\n", rc );
-    PTOD(ptod_txt);
+    PTOD1("POQ failed %08x\n", rc );
     return NULL;
   }
 
@@ -147,16 +128,14 @@ static struct Query* add_query(JNIEnv *env, PDH_COUNTER_PATH_ELEMENTS cpe[], int
 
     if ( (rc  = PdhMakeCounterPath(&cpe[i], szFullPath, &cbPathSize, 0)) != ERROR_SUCCESS )
     {
-      sprintf(ptod_txt, "MCP failed %08x\n", rc );
-      PTOD(ptod_txt);
+      PTOD1("MCP failed %08x\n", rc );
       return NULL;
     }
 
     if ( (rc  = PdhAddCounter(qp->hquery, szFullPath, 0, &qp->hcounter[i]))
          != ERROR_SUCCESS )
     {
-      sprintf(ptod_txt, "PAC failed %08x\n", rc );
-      PTOD(ptod_txt);
+      PTOD1("PAC failed %08x\n", rc );
       return NULL;
     }
   }
@@ -198,8 +177,8 @@ JNIEXPORT jlong JNICALL Java_Vdb_Native_getCpuData(JNIEnv *env,
   PDH_COUNTER_PATH_ELEMENTS cpe[PCOUNTERS] =
   {
     { NULL, "Processor", "_Total", NULL, -1, "% Processor Time"},
-    { NULL, "Processor", "_Total", NULL, -1, "% DPC Time"},
-    { NULL, "Processor", "_Total", NULL, -1, "% Interrupt Time"},
+    { NULL, "Processor", "_Total", NULL, -1, "% Idle Time"},
+    { NULL, "Processor", "_Total", NULL, -1, "% Privileged Time"},
     { NULL, "Processor", "_Total", NULL, -1, "% User Time"},
   };
 
@@ -243,9 +222,16 @@ JNIEXPORT jlong JNICALL Java_Vdb_Native_getCpuData(JNIEnv *env,
   if (get_query(env, qp, 0) < 0)
     return -1;
 
+  //PTOD4("results: total: %6.2f idle: %6.2f priv: %6.2f user: %6.2f",
+  //      qp->rdata[0].doubleValue,
+  //      qp->rdata[1].doubleValue,
+  //      qp->rdata[2].doubleValue,
+  //      qp->rdata[3].doubleValue);
+
+  /* As of win7: */
   total_time   = qp->rdata[0].doubleValue;
-  user_time    = qp->rdata[3].doubleValue;
-  kernel_time  = total_time - user_time;
+  user_time    = total_time - qp->rdata[2].doubleValue;
+  kernel_time  = qp->rdata[2].doubleValue;
 
 
   /* Store counters: */

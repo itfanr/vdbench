@@ -1,18 +1,23 @@
 package Vdb;
 
 /*
- *
- * Copyright (c) 2000-2008 Sun Microsystems, Inc. All Rights Reserved.
- *
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
+ */
+
+/*
+ * Author: Henk Vandenbergh.
  */
 
 import java.awt.*;
 import java.awt.event.*;
 import java.io.*;
+import java.io.File;
+import java.text.SimpleDateFormat;
 import java.util.*;
 
 import javax.swing.*;
 import javax.swing.border.*;
+import javax.swing.border.TitledBorder;
 import javax.swing.event.ListSelectionEvent;
 import javax.swing.event.ListSelectionListener;
 import javax.swing.table.AbstractTableModel;
@@ -20,6 +25,8 @@ import javax.swing.table.TableColumnModel;
 import javax.swing.text.*;
 
 import Utils.*;
+import Utils.Fget;
+import Utils.Fput;
 
 
 
@@ -28,8 +35,8 @@ import Utils.*;
  */
 public class PostGui extends JFrame implements ActionListener
 {
-  private final static String c = "Copyright (c) 2000-2008 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private JSplitPane  split_panel  = new JSplitPane();
 
@@ -61,7 +68,7 @@ public class PostGui extends JFrame implements ActionListener
   private String   last_text = null;
 
 
-  public PostGui(String file_in, BadBlock[] blks, ArrayList overvw)
+  public PostGui(String file_in, DvKeyBlock[] bad_keyblocks, ArrayList overvw)
   {
     filename = file_in;
     setTitle("Vdbench Data Validation post processing utility for file " +
@@ -79,7 +86,7 @@ public class PostGui extends JFrame implements ActionListener
 
 
     left_table.setModel(left_model);
-    left_model.setBlocks(blks);
+    left_model.setBlocks(bad_keyblocks);
 
     /* Set the minimum width for the columns: */
     sizeColumn(0, left_table);
@@ -104,9 +111,32 @@ public class PostGui extends JFrame implements ActionListener
     buttons.add(read_text       );
     buttons.add(read_error      );
 
+
+  /*
+  *   1 @param gridx      The initial gridx value.
+  *   2 @param gridy      The initial gridy value.
+  *   3 @param gridwidth  The initial gridwidth value.
+  *   4 @param gridheight The initial gridheight value.
+  *   5 @param weightx    The initial weightx value.
+  *   6 @param weighty    The initial weighty value.
+  *   7 @param anchor     The initial anchor value.
+  *   8 @param fill       The initial fill value.
+  *   9 @param insets     The initial insets value.
+  *  10 @param ipadx      The initial ipadx value.
+  *  11 @param ipady      The initial ipady value.
+  */
+
+
+    /* 1  The initial gridx value.       * 5  The initial weightx value. */
+    /* 2  The initial gridy value.       * 6  The initial weighty value. */
+    /* 3  The initial gridwidth value.   * 7  The initial anchor value.  */
+    /* 4  The initial gridheight value.  * 8  The initial fill value.    */
+    /*                                     h  v  h  v  h    v    */
+    //add(mn_label,   new GridBagConstraints(0, 0, 1, 1, 1.0, 1.0, GridBagConstraints.CENTER, GridBagConstraints.BOTH, new Insets(0, 0, 0, 0), 0, 0));
+
     left_panel.setLayout(new GridBagLayout());
-    left_panel.add(error_scroll,  new GridBagConstraints(0, 0, 1, 1, 0.5, 0.3, GridBagConstraints.WEST, GridBagConstraints.BOTH, new Insets(0, 0, 0, 0), 0, 0));
-    left_panel.add(left_scroll,   new GridBagConstraints(0, 1, 1, 1, 0.5, 0.3, GridBagConstraints.WEST, GridBagConstraints.BOTH, new Insets(0, 0, 0, 0), 0, 0));
+    left_panel.add(error_scroll,  new GridBagConstraints(0, 0, 1, 1, 0.5, 0.2, GridBagConstraints.WEST, GridBagConstraints.BOTH, new Insets(0, 0, 0, 0), 0, 0));
+    left_panel.add(left_scroll,   new GridBagConstraints(0, 1, 1, 1, 0.5, 0.8, GridBagConstraints.WEST, GridBagConstraints.BOTH, new Insets(0, 0, 0, 0), 0, 0));
 
     split_panel.setLeftComponent(left_panel);
     split_panel.setRightComponent(right_scroll);
@@ -120,14 +150,15 @@ public class PostGui extends JFrame implements ActionListener
     error_scroll.setBorder(new TitledBorder(BorderFactory.createEtchedBorder(Color.white,new Color(148, 145, 140)),
                                            "Short error text"));
     left_scroll.setBorder(new TitledBorder(BorderFactory.createEtchedBorder(Color.white,new Color(148, 145, 140)),
-                                           "Failed data blocks"));
+                                           "Failed Key blocks"));
+    //left_scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_ALWAYS);
+
 
     addComponentListener(new ComponentAdapter()
                          {
                            public void componentResized(ComponentEvent e)
                            {
                              Component c = e.getComponent();
-                             //common.ptod("c: " + c.getSize());
                            }
 
                          });
@@ -187,7 +218,7 @@ public class PostGui extends JFrame implements ActionListener
 
     left_table.setRowSelectionInterval(0, 0);
 
-    split_panel.setDividerLocation(0.5);
+    split_panel.setDividerLocation(0.30);
 
     Message.centerscreen(this);
   }
@@ -284,8 +315,8 @@ public class PostGui extends JFrame implements ActionListener
   void row_changed()
   {
     int row = left_table.getSelectedRow();
-    BadBlock bb = left_model.getRowAt(row);
-    error_text.setText("Double click on any row to display just this block.\n" +
+    DvKeyBlock bb = left_model.getRowAt(row);
+    error_text.setText("Double click on any row to display just this Key block.\n" +
                        "Double click on any data on the right side " +
                        "to only display selected values.\nErrors for this block:\n" +
                        bb.getBlockStatus());
@@ -328,7 +359,7 @@ public class PostGui extends JFrame implements ActionListener
   private void reReadCurrentLba()
   {
     int row = left_table.getSelectedRow();
-    BadBlock bb = left_model.getRowAt(row);
+    DvKeyBlock bb = left_model.getRowAt(row);
 
     /* Modify the block: */
     long handle = Native.openFile(bb.lun);
@@ -340,7 +371,7 @@ public class PostGui extends JFrame implements ActionListener
     Native.closeFile(handle);
 
     Vector lines = PrintBlock.printit(bb.lun, bb.logical_lba - bb.file_start_lba,
-                                      bb.xfersize, bb.xfersize);
+                                      bb.key_block_size, bb.key_block_size);
     StringBuffer txt = new StringBuffer(65536);
     for (int i = 0; i < lines.size(); i++)
       txt.append((String) lines.elementAt(i) + "\n");
@@ -348,12 +379,32 @@ public class PostGui extends JFrame implements ActionListener
     setAndSaveText(txt.toString());
   }
 
+
+
   private void displayCurrentLba()
   {
+
+    SimpleDateFormat df1 = new SimpleDateFormat( "MMM dd, yyyy HH:mm:ss.SSS zzz" );
+    String        format = "%" + df1.toPattern().length() + "s";
+
     int row = left_table.getSelectedRow();
 
-    BadBlock bb = left_model.getRowAt(row);
+    DvKeyBlock bb = left_model.getRowAt(row);
     StringBuffer txt = new StringBuffer(65536);
+
+    txt.append("Timeline for this Key block (not guaranteed to be reported in proper sequence): \n");
+    if (bb.first_sector_written_tod != null)
+      txt.append(String.format("%s - 'time written' found in first bad sector: \n",
+                               df1.format(bb.first_sector_written_tod)));
+
+    if (bb.last_valid != null && bb.last_valid_rw != null)
+      txt.append(String.format("%s - Last time this Key block was %s \n",
+                               df1.format(bb.last_valid), bb.last_valid_rw));
+
+    if (bb.first_dvpost_line_tod != null)
+      txt.append(String.format(format + " - TOD of first 'dvpost' error found for this Key block. \n",
+                               bb.first_dvpost_line_tod + "    "));
+
     for (int i = 0; i < bb.raw_input.size(); i++)
       txt.append((String) bb.raw_input.get(i) + "\n");
 
@@ -415,24 +466,24 @@ public class PostGui extends JFrame implements ActionListener
 
 class DVModel extends AbstractTableModel
 {
-  private String[] columns = {"Lun", "lba", "key", "Errors"};
-  private BadBlock[] blocks;
+  private String[] columns = {"sd", "lba", "key/read", "Errors"};
+  private DvKeyBlock[] blocks;
 
-  public void setBlocks(BadBlock[] blks)
+  public void setBlocks(DvKeyBlock[] blks)
   {
     blocks = blks;
   }
 
-  public BadBlock getRowAt(int row)
+  public DvKeyBlock getRowAt(int row)
   {
     return blocks[row];
   }
   public Object getValueAt(int row, int col)
   {
-    BadBlock bb = blocks[row];
-    if (col == 0) return bb.lun;
-    if (col == 1) return String.format("0x%x", bb.logical_lba);
-    if (col == 2) return String.format("0x%02x", bb.key_wanted);
+    DvKeyBlock bb = blocks[row];
+    if (col == 0) return bb.sd_wanted;
+    if (col == 1) return String.format("0x%08x", bb.logical_lba);
+    if (col == 2) return String.format("0x%02x/%02x", bb.key_wanted, bb.key_read);
     else  return bb.getBlockStatusShort();
   }
   public int getColumnCount()

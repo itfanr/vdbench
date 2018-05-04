@@ -1,125 +1,184 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
 
-import Utils.Format;
 import java.util.*;
-import Oracle.LogWriter;
-import Oracle.OracleBlock;
+
+import User.UserCmd;
+
+import Utils.Format;
+import Utils.Fput;
 
 
 /**
  * This class contains the code for the IO task.
+ * An IO_task can be SD based, e.g. sd=sd1,threads=8,
+ * or it can be WD based, e.g. wd=wd1,threads=8 for concatenated SDs.
  */
 public class IO_task extends Thread
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
+
+  private SD_entry sd = null;       /* SD for this thread               */
+
+  private FifoList get_from_fifo;   /* FIFO list from WT to IOT         */
+
+  private Task_num tn;
+
+  private int      allocated_buffer_size;
+  private long     write_buffer;    /* Native write buffer for this task */
+  private long     read_buffer;     /* Native read buffer for this task  */
+
+  private int      ios_currently_active = 0;
 
 
-  FifoList wt_to_iot;    /* FIFO list from WT to IOT                          */
-  SD_entry sd;           /* SD for this thread                                */
-  boolean  windows = common.onWindows();
-  int      threadno = -1;
-  long win_handle = -1;  /* Handle because windows allows only one            */
-                         /* outstanding to a file.                            */
-                         /* We should double check if this is still the case! */
+  private Cmd_entry cmd_array[] = new Cmd_entry[1];;
 
-  Task_num tn;
+  private long      pid_and_lwp;
 
-  long file_handle = 0;        /* File handle for this thread.                */
-                               /* Windows allocates its own for each thread   */
+  private KeyMap    key_map = null;
 
 
-  long   write_buffer;         /* Native write buffer for this task */
-  long   read_buffer;          /* Native read buffer for this task  */
+  private long rc = 0;   /* Return of last excuted read or write. All error       */
+                         /* reporting is done by calls to io_error_report from JNI*/
+  private int     data_flag;
+  private boolean compression_only;
 
-  private int ios_currently_in_multi = 0;
+  private UserCmd usercmd;   /* For User API. */
 
-  static boolean print_io_comp = common.get_debug(common.PRINT_IO_COMP);
-
-  int       max_cmd_burst = 32;
-  Cmd_entry cmd_array[];
-  long      cmd_fast[];
-
-  long allocated_buffer_size;
-
-  private Random dedup_randomizer = null;
-  private long sets_written = 0;
-  private long uniques_written = 0;
+  private StreamContext stream_context = null;
 
 
-  /* This must stay in synch with vdbjni.c!! */
-  private static int CMD_READ_FLAG  = 0;
-  private static int CMD_RAND       = 1;
-  private static int CMD_HIT        = 2;
-  private static int CMD_LBA        = 3;
-  private static int CMD_XFERSIZE   = 4;
-  private static int DV_KEY         = 5;
-  private static int CMD_FHANDLE    = 6;
-  private static int CMD_BUFFER     = 7;
-  private static int WG_NUM         = 8;
-  private static int CMD_FAST_LONGS = 9;
+  private ThreadMonitor tmonitor = null;
 
-  private static boolean debug_write = common.get_debug(common.DV_DEBUG_WRITE_ERROR);
+
+  private Timers gettime = new Timers("IO_task getArray");
+  private Timers iotime  = new Timers("IO_task iotime");
+
+  private int    key_blocksize   = 0;
+  private int    max_sd_xfersize = 0;
+
+  /* To be used for translation of concatenated LBA to REAL lba: */
+  private SD_entry        concat_search_key = new SD_entry();
+  private ConcatLbaSearch search_method     = new ConcatLbaSearch();
+
+
+
+  private static boolean print_io_comp     = common.get_debug(common.PRINT_IO_COMP);
+  private static boolean fake_trace        = false;
+
+  private static boolean remove_after_error = Validate.removeAfterError();
+
+
 
   /**
-   * Set up the run parameters for the IO task.
+   * Set up the run parameters for the IO task that references an SD, either a
+   * real SD or a concatenated SD
    */
-  public IO_task(Task_num tn_in, SD_entry sd_in, int thread)
+  public IO_task(Task_num tn_in, SD_entry sd_in)
   {
-    sd        = sd_in;
-    wt_to_iot = sd.wt_to_iot;
-    tn        = tn_in;
+    sd                = sd_in;
+    get_from_fifo     = sd.fifo_to_iot;
+    tn                = tn_in;
+    data_flag         = Validate.createDataFlag();
+    compression_only  = ((data_flag & Validate.FLAG_COMPRESSION) != 0) ;
+
+    max_sd_xfersize   = sd.getMaxSdXfersize();
+
+    if (Validate.isRealValidate())
+      key_blocksize = sd.dv_map.getKeyBlockSize();
+    else if (Validate.isValidateForDedup())
+      key_blocksize = Dedup.getDedupUnit();
+
+    setName(tn.task_name);
     tn.task_set_start_pending();
-    threadno = thread;
 
-    /* Force a unique seed for each dedup randomizer: */
-    dedup_randomizer = new Random(System.currentTimeMillis() * tn.task_number * 1000);
+    fake_trace = Validate.showLba();
+  }
 
-    setName("IO_task " + sd.sd_name);
+
+
+  /**
+   * For concatenated SDs sharing all rd threads=
+   */
+  public IO_task(Task_num tn_in, FifoList fifolist, int max_xfer)
+  {
+    sd                = null;
+    get_from_fifo     = fifolist;
+    tn                = tn_in;
+    data_flag         = Validate.createDataFlag();
+    compression_only  = ((data_flag & Validate.FLAG_COMPRESSION) != 0) ;
+
+    max_sd_xfersize   = max_xfer;
+    key_blocksize     = max_xfer;
+    if (Dedup.isDedup())
+      key_blocksize = Dedup.getDedupUnit();
+
+    setName(tn.task_name);
+    tn.task_set_start_pending();
+
+    fake_trace = Validate.showLba();
+  }
+
+
+  /**
+   * Performance enhancement filling write buffers: If the write buffer address
+   * is zero it will be replaced by an address inside of the data pattern
+   * buffer. This eliminates the need to copy gigabuckets of data from the
+   * pattern buffer to the write buffer, removing a huge amount of cpu cycles.
+   *
+   * This of course can ONLY be done when Data Validation or Dedup is not
+   * involved.
+   *
+   * BTW: yes, the 'prevent_dedup' call done in JNI copying into the pattern
+   * buffer will lose maybe a very slight level of accuracy as far as the
+   * no-dedup change, but likely is so little that this will just be
+   * noise.
+   *
+   * The 'slight' turns out to be more than I like when running with multiple
+   * (lotsa) threads, so I decided to remove this for now.
+   * A better solution in the future maybe is to have the write done from the
+   * WRITE buffer after the write buffer has been initialized?
+   * TBD!!
+   */
+  private boolean doWeNeedWriteBuffer()
+  {
+    /* Without writes, this is easy: */
+    if (sd != null && !sd.isOpenForWrite())
+      return false;
+
+    /* Validate and Dedup MUST have a write buffer: */
+    if (Validate.isRealValidate() || Validate.isValidateForDedup())
+      return true;
+
+    /* The rest should all be fine, allowing me to write from the pattern buffer: */
+    //return false;
+
+    /* See above notes */
+    return true;
   }
 
   /**
    * Handle i/o errors.
    *
    * ******************************
-   * This is called from vdbjni.c *
+   * This is called from vdb_dv.c *
    * ******************************
    *
-   * I/O done using Native.read and Native.write only return a
-   * negative value to indicate an error, but there is currently no
-   * feedback to possible errno.h or GetLastError().
    */
   public static synchronized void io_error_report(long flg,
                                                   long fhandle,
-                                                  long lba,
+                                                  long file_lba,
                                                   long xfersize,
-                                                  long errno)
+                                                  long errno,
+                                                  long buffer)
   {
     boolean read = (flg != 0);
     DV_map     dv_map = null;
@@ -132,59 +191,82 @@ public class IO_task extends Thread
     if (obj instanceof SD_entry)
     {
       sd     = (SD_entry) obj;
-      dv_map = sd.getDvMap();
+      sd.sd_error_count++;
+      dv_map = sd.dv_map;
       lun    = sd.lun;
+
+      /* A request to ignore the device after an i/o error? */
+      if (remove_after_error)
+        ErrorLog.ptod("'data_errors=remove_device' requested for sd=" +
+                      sd.sd_name + " No longer issuing i/o against this SD");
     }
 
     else if (obj instanceof ActiveFile)
     {
       afe    = (ActiveFile) obj;
       dv_map = afe.getFileEntry().getAnchor().getDVMap();
-      lun    = afe.getFileEntry().getName();
+      lun    = afe.getFileEntry().getFullName();
     }
 
     else
-      common.failure("io_error_report(): unexpected file handle returned: " + obj);
+    {
+      lun = (String) obj;
+      common.ptod("errno: " + errno);
+      common.ptod("lun: " + lun);
+      common.ptod("Non-SD or FSD related i/o error: " + Errno.xlate_errno(errno));
+      common.ptod("Unknown file handle. Continuing");
+      //common.failure("io_error_report(): unexpected file handle returned: " + obj);
+    }
 
+    /* New DV reporting is only done AFTER 60003 has been received. */
+    /* If journal recovery finds that the block is fine, great.     */
+    if (errno == 60003)
+    {
+      //common.where(16);
+      if (sd != null)
+      {
+        if (BadDataBlock.reportBadDataBlock(sd, file_lba, 0, buffer))
+          return;
+      }
+      else
+      {
+        if (BadDataBlock.reportBadDataBlock(afe, file_lba, afe.getFileEntry().getFileStartLba(), buffer))
+          return;
+      }
+    }
 
-
-    /* Starting solaris 11 there was a problem with Vdbench interrupting */
-    /* IO_task and therefore causing an interrupted i/o to end with      */
-    /* ENOENT, but also the sendMessage below to be interrupted.         */
-    // Resolved by not sending interrupts to a thread with an active i/o
-    //if (SlaveJvm.isWorkloadDone())
-    //{
-    //  common.plog("Possible i/o error after run completion. May just be caused by interrupt().");
-    //  return;
-    //}
 
     /* Send error message to master: */
-    // DO NOT CHANGE, SEE dvpOST()
+    // DvPost may become obsolete
+    // DO NOT CHANGE, SEE DVPost()
     String txt = String.format("%s op: %-6s lun: %-30s lba: %12d 0x%08X xfer: %8d errno: %s ",
                                common.tod(),
                                (read) ? "read" : "write",
                                lun,
-                               lba,
-                               lba,
+                               file_lba,
+                               file_lba,
                                xfersize,
                                Errno.xlate_errno(errno));
-    ErrorLog.sendMessageToMaster(txt);
+    ErrorLog.ptod(txt);
 
-    /* Keep track of the amount of errors: */
-    ErrorLog.countErrorsOnSlave(lun, lba, (int) xfersize);
+    /* Keep track of the amount of errors (code will abort if needed): */
+    ErrorLog.countErrorsOnSlave(lun, file_lba, (int) xfersize);
 
     /* When data validation is active, mark the block bad: */
     if (Validate.isValidate())
     {
       try
       {
+        /* This data block has an error. The question that can be asked is:   */
+        /* If this is a corruption, shall I only mark the key block in error  */
+        /* or shall I mark the whole data block in error.                     */
+        /* Non-corruption errors of course need the WHOLE block to be marked. */
+        /* Solution for now: always the whole data block.                     */
         if (obj instanceof SD_entry)
-          dv_map.dv_set_unbusy(lba, DV_map.DV_ERROR, read);
-        else
         {
-          // Marking as 'error' is now done in Bad_sector()
-          //long file_start_lba = afe.getFileEntry().getFileStartLba();
-          //dv_map.dv_set(lba - file_start_lba, DV_map.DV_ERROR);
+          KeyMap key_map = new KeyMap(0l, sd.getKeyBlockSize(),
+                                      SlaveWorker.work.maximum_xfersize);
+          key_map.markDataBlockBad(dv_map, file_lba);
         }
       }
 
@@ -196,290 +278,14 @@ public class IO_task extends Thread
   }
 
 
-  /**
-   * Execute the i/o request(s).
-   * It can be a read, a write, or a write that was changed to a read by
-   * Data Validation so that the data can be validated before we rewrite it.
-   */
-  private void io_do_cmds(int burst)
-  {
-    /* Some last minute stuff:                                            */
-    /* - Store the file handle to be used                                 */
-    /* - Do some checking                                                 */
-    for (int i = 0; i < burst; i++)
-    {
-      Cmd_entry cmd = cmd_array[i];
-
-      /* If this is an EOF signal, remove this i/o from the burst and quit */
-      if (cmd.delta_tod == Long.MAX_VALUE)
-      {
-        /* Whatever comes behind this entry must be ignored: */
-        if (--burst == 0)
-          return;
-        break;
-      }
-
-      /* At this point we may never touch lba=0 because that is the vtoc: */
-      if (cmd.cmd_lba == 0)
-      {
-        cmd.cmd_print(sd, "lba0");
-        common.failure("We may never access LBA=0; Internal error");
-      }
-
-      /* Last double check for lba errors: (obsolete if we don't do concatenation)*/
-      if ( (cmd.cmd_lba + cmd.cmd_xfersize) > sd.end_lba)
-        common.failure("seek too high: " + cmd.cmd_wg.wd_name + " " +
-                       Format.f("%d",  cmd.cmd_lba )     + " / " +
-                       cmd.cmd_xfersize + " / " +
-                       Format.f("%d",  sd.end_lba ));
-
-      if (cmd.cmd_xfersize > allocated_buffer_size)
-        common.failure("Trying to put " + cmd.cmd_xfersize + " bytes into a " +
-                       allocated_buffer_size + " byte buffer");
-    }
-
-    /* JNI runs much faster with arrays than with objects: */
-    cmd_array_xlate(burst);
-
-    /* Last minute stuff in 'fast' array: */
-    for (int i = 0; i < burst; i++)
-    {
-      /* I/O needs a handle: */
-      int offset = CMD_FAST_LONGS * i;
-      if (windows)
-        cmd_fast[ offset + CMD_FHANDLE ] = sd.win_handles[threadno];
-      else
-        cmd_fast[ offset + CMD_FHANDLE ] = sd.fhandle;
-
-      /* Store buffer addresses: */
-      if (cmd_array[i].cmd_read_flag)
-        cmd_fast[ offset + CMD_BUFFER  ] = read_buffer;
-      else
-        cmd_fast[ offset + CMD_BUFFER  ] = write_buffer;
-
-      /* Dedup experiment: */
-      if (!cmd_array[i].cmd_read_flag && Validate.getDedupRate() > 0)
-      {
-        int unique_block = dedup_randomizer.nextInt(100);
-        int unique_value = dedup_randomizer.nextInt(Integer.MAX_VALUE);
-        int sets_value   = dedup_randomizer.nextInt(Validate.getDedupSets());
-        int place        = (int) (cmd_fast[CMD_XFERSIZE] / 4 - 1) *
-                           Validate.getDedupPlace() / 100;
-        int[] pattern    = DV_map.get_pattern(0);
-
-        /* This code must be locked since for this experiment we overlay the */
-        /* contents of a pattern that should be fixed:                       */
-        synchronized (pattern)
-        {
-          //common.ptod("burst: " + burst);
-          //common.ptod("unique_block: " + unique_block + " " + SlaveWorker.work.dedup_rate);
-          //common.ptod(Format.f("unique_value: %08x ", unique_value) + sd.sd_name );
-          if (unique_block < Validate.getDedupRate())
-          {
-            uniques_written++;
-            pattern[place] = unique_value;
-            //common.ptod("sd=" + sd.sd_name + Format.f(" unique_value: %08x", unique_value));
-          }
-
-          else
-          {
-            sets_written++;
-            pattern = DV_map.get_pattern(1);
-            pattern[place] = sets_value;
-            //common.ptod("sets_value: " + sets_value);
-          }
-
-          Native.array_to_buffer(pattern, write_buffer);
-        }
-      }
-    }
-
-    /* Data Validation stuff: */
-    if (Validate.isValidate())
-      dv_startup(cmd_array[0], burst);
-
-    /* Go do all the io requested in this array: */
-    ios_currently_in_multi += burst;
-    //if (debug_pendings > 500)
-    Native.multiJniCalls(cmd_fast, burst);
-    ios_currently_in_multi -= burst;
-    //common.ptod("ios_currently_in_multi2: " + ios_currently_in_multi + " " + burst);
-
-    /* Now for all the post-io stuff: */
-    for (int i = 0; i < burst; i++)
-    {
-      int offset = CMD_FAST_LONGS * i;
-      Cmd_entry cmd = cmd_array[i];
-
-      /* For debugging: */
-      if (print_io_comp)
-        cmd.cmd_print_resp(sd, "print_io_comp");
-
-      /* Data validation stuff: */
-      if (Validate.isValidate() && sd.getDvMap() != null)
-        dv_cleanup();
-
-      /* Lower on-the-way count to keep track of sequential eof: */
-      cmd.cmd_wg.subtract_io(cmd);
-
-      if (cmd.oblocks != null)
-      {
-        /* If this was a Logwriter completion, notify him: */
-        if (cmd.oblocks instanceof Vector)
-          LogWriter.notifyLogWriteComplete((Vector) cmd.oblocks);
-
-        /* If this was any other completion, notify user: */
-        else if (cmd.oblocks instanceof OracleBlock)
-          ((OracleBlock) cmd.oblocks).operationComplete();
-
-        else
-          common.failure("Invalid oblocks value: " + cmd.oblocks);
-      }
-      else if (common.get_debug(common.ORACLE))
-      {
-        Trace.print();
-        common.failure("cmd.oblocks should not be null: readflag: " + cmd.cmd_read_flag + " " + cmd.cmd_lba);
-      }
-
-      /* Clear to catch the failure above: */
-      cmd.oblocks = null;
-    }
-  }
-
-
 
   /**
-   * Prepare an operation for Data validation
-   */
-  private void dv_startup(Cmd_entry cmd, int burst)
-  {
-    if (burst != 1)
-      common.failure("Invalid burst count for DV: " + burst);
-
-    /* Write journal record if needed: */
-    if (!cmd.cmd_read_flag && Validate.isJournaling())
-      sd.getJournal().writeBeforeImage(cmd);
-
-    if (cmd.cmd_read_flag)
-      DV_map.key_reads[cmd.dv_key]++;
-    else
-      DV_map.key_writes[cmd.dv_key]++;
-  }
-
-
-  /**
-   * Data validation: after a read, validate. After a reread before a write, write.
-   */
-  private static int debug_writes = 1000;
-  private static int debug_skips  = 10;
-  private boolean forced_short_write = false;
-  private final static boolean debug_clean = common.get_debug(common.DEBUG_DV_CLEANUP);
-  private void dv_cleanup()
-  {
-    Cmd_entry cmd = cmd_array[0];
-
-    if (forced_short_write)
-      common.failure("forced a short write");
-
-    /* If the block is now in error we know that the last io failed,  */
-    /* and we do not have to do any cleanup (done in io_error_report) */
-    /* (For instance, if preread failed, do not start the write).     */
-    if (sd.getDvMap().dv_get(cmd.cmd_lba) == DV_map.DV_ERROR)
-      return;
-
-    /* Write journal record if needed: */
-    if (!debug_clean)
-    {
-      if (!cmd.cmd_read_flag && Validate.isJournaling())
-        sd.getJournal().writeAfterImage(cmd);
-    }
-    else
-    {
-      /* For journal writes, write the first 'n' After images, */
-      /* but then skip some After images writes: */
-      if (!cmd.cmd_read_flag && Validate.isJournaling())
-      {
-        common.ptod("debug_writes: " + debug_writes + " " + debug_skips);
-        if (debug_writes-- > 0)
-          sd.getJournal().writeAfterImage(cmd);
-        else
-        {
-          if (debug_skips-- <= 0)
-            common.failure("Debugging Journaling. Limit reached");
-          return;
-        }
-      }
-    }
-
-
-    /* Store timestamp of last successful read/write: */
-    sd.getDvMap().save_timestamp(cmd.cmd_lba, cmd.cmd_read_flag);
-
-    /* If this was a DV pre-read, change read to write and start write: */
-    if (cmd.dv_pre_read)
-    {
-      cmd.cmd_read_flag = false;
-      cmd.dv_pre_read   = false;
-      cmd.dv_key        = DV_map.dv_increment(cmd.dv_key);
-
-      /* Recursive call!! */
-      cmd.cmd_wg.add_io(cmd);
-      io_do_cmds(1);
-    }
-
-    /* Optional read after write? */
-    else if (Validate.isImmediateRead() && !cmd.cmd_read_flag)
-    {
-      cmd.cmd_read_flag = true;
-
-      /* Recursive call!! */
-      cmd.cmd_wg.add_io(cmd);
-      io_do_cmds(1);
-
-      /* if the block now is bad it means we had a failure in immediate read: */
-      if (sd.getDvMap().dv_get(cmd.cmd_lba) == DV_map.DV_ERROR)
-      {
-        ErrorLog.sendMessageToMaster(common.tod() + " Data Validation error " +
-                                     "during immediate re-read. lun=" + sd.lun +
-                                     Format.f(" lba 0x%016X", cmd.cmd_lba));
-      }
-    }
-
-    /* At this point the lba is still marked busy                            */
-    else
-    {
-      try
-      {
-        sd.getDvMap().dv_set_unbusy(cmd.cmd_lba, cmd.dv_key, cmd.cmd_read_flag);
-      }
-      catch (Exception e)
-      {
-        common.ptod("cmd.cmd_lba: " + cmd.cmd_lba);
-        common.ptod("cmd.dv_key: " + cmd.dv_key);
-        common.ptod("cmd.cmd_read_flag: " + cmd.cmd_read_flag);
-        cmd.cmd_print(sd, "exception");
-        common.failure(e);
-      }
-    }
-  }
-
-
-  /**
-   * IO task: start i/o's, wait for completion, and maitain statistics
+   * IO task: start i/o's, wait for completion, and maintain statistics
    * Block is read or written. If the read was for a data validation write,
    * validate the data from the read and start the write.
    */
   public void run()
   {
-    long rc;
-
-    long prev_lba = -1;
-    //common.plog("Starting IO_task " + tn.task_name);
-
-
-    /* The 'sd' pointer in IO_entry is the same as the sd pointer in       */
-    /* the Cmd_entry. This is a leftover from when we did SD concatenation */
-    /* Some day we should clean up the code.                               */
 
     try
     {
@@ -505,21 +311,34 @@ public class IO_task extends Thread
           if (SlaveJvm.isWorkloadDone())
             break;
 
-          burst = wt_to_iot.getArray(cmd_array);
+          gettime.before();
+          burst  = get_from_fifo.getArray(cmd_array);
+          tmonitor.add1();
+          gettime.after();
 
           if (SlaveJvm.isWorkloadDone())
             break;
 
-          //common.ptod("cmd_array[0].cmd_readflag: " + cmd_array[0].cmd_read_flag);
+          if (cmd_array[0].delta_tod == Long.MAX_VALUE)
+            break;
+
+          /* A request to ignore the device after an i/o error? */
+          if (remove_after_error && sd.sd_error_count > 0)
+            continue;
+
+          // To test skip_after_io_error
+          //if (remove_after_error && sd.sd_name.equals("sd1"))
+          //  io_error_report(1, cmd_array[0].sd_ptr.fhandle, 123, 4096, 555);
 
           /* Do scsi resets if requested: */
-          if (sd.scsi_bus_reset != 0 ||
-              sd.scsi_lun_reset != 0)
-            sd.scsi_reset();
+          if (cmd_array[0].sd_ptr.scsi_bus_reset != 0 ||
+              cmd_array[0].sd_ptr.scsi_lun_reset != 0)
+            cmd_array[0].sd_ptr.scsi_reset();
 
-
-          /* Execute a regular i/o request: */
-          io_do_cmds(burst);
+          iotime.before();
+          if (!processSingleIO(cmd_array[0]))
+            break;
+          iotime.after();
         }
         catch (InterruptedException e)
         {
@@ -533,26 +352,21 @@ public class IO_task extends Thread
       /* may have fallen through already because of isWorkloadDone().         */
       /* The call to interrupt_tasks("IO_task") is still needed though        */
       /* because this thread could be waiting inside of the fifo() code.      */
-      this.interrupted();
-
-      Native.freeBuffer(allocated_buffer_size, read_buffer);
-      if (read_buffer != write_buffer)
+      Thread.interrupted();
+      if (read_buffer != 0)
+        Native.freeBuffer(allocated_buffer_size, read_buffer);
+      if (write_buffer != 0)
         Native.freeBuffer(allocated_buffer_size, write_buffer);
 
       /* See above! */
-      this.interrupted();
+      Thread.interrupted();
 
-      if (Validate.getDedupRate() > 0)
-      {
-        double totals = (uniques_written + sets_written);
-        common.ptod(sd.sd_name +
-                    Format.f(" total blocks: %8d;", totals) +
-                    Format.f(" sets%%: %5.2f;", ((double) sets_written * 100 / totals)) +
-                    Format.f(" unique%%: %5.2f",+ ((double) uniques_written * 100 / totals)));
-      }
+      gettime.print();
+      iotime.print();
 
       tn.task_set_terminating(0);
-      //common.plog("Ended IO_task " + tn.task_name);
+      //common.ptod("Ended IO_task " + tn.task_name);
+
     }
 
 
@@ -560,183 +374,512 @@ public class IO_task extends Thread
     {
       common.abnormal_term(t);
     }
+  }
 
+
+  /**
+   * Issue a single i/o.
+   *
+   * Errors are reported via JNI using io_error_report().
+   */
+  private boolean processSingleIO(Cmd_entry cmd)
+  {
+    /* Optional user processing needed? */
+    if (cmd.cmd_wg.user_class != null)
+    {
+      usercmd = new UserCmd(cmd);
+      cmd.cmd_wg.user_class.preIO(usercmd);
+      usercmd.updateCommand();
+      if (cmd.cmd_lba == 0 && !cmd.cmd_read_flag && !cmd.sd_ptr.canWeUseBlockZero())
+        common.failure("Attempting to read or write to lba 0");
+    }
+
+    /* When requested, allow override of lba for sequential streaming: */
+    if (stream_context != null)
+    {
+      cmd.cmd_lba = stream_context.getNextSequentialLba(cmd);
+      if (cmd.cmd_lba < 0)
+      {
+        cmd.cmd_wg.sequentials_lower();
+        return false;
+      }
+    }
+
+    /* If we are working with a concatenated SD now determine the proper */
+    /* real SD to use with it's real lba:                                */
+    if (cmd.sd_ptr.concatenated_sd)
+    {
+      cmd.concat_lba = cmd.cmd_lba;
+      cmd.concat_sd  = cmd.sd_ptr;
+      WG_entry wg    = cmd.cmd_wg;
+      sd = ConcatSds.translateConcatToRealSd(cmd, concat_search_key,
+                                             search_method,
+                                             wg.access_block_zero);
+
+      /* Paranoia check: */
+      if (cmd.cmd_lba == 0 && !cmd.cmd_read_flag && !cmd.sd_ptr.canWeUseBlockZero())
+        common.failure("Attempting to write to lba 0");
+    }
+
+
+    /* Now go do the i/o: ('while (true)' just for break) */
+    while (true)
+    {
+      /* Keep track of outstanding i/o to prevent interrupts during shutdown: */
+      ios_currently_active++;
+
+      /* Get the easy stuff out of the way first,      */
+      /* stuff without real data buffer manipulations. */
+
+      /* Simple straight-forward read:                 */
+      if (cmd.cmd_read_flag && !Validate.isRealValidate())
+      {
+        rc = Native.readFile(cmd.sd_ptr.fhandle, cmd.cmd_lba,
+                             cmd.cmd_xfersize,   read_buffer, cmd.jni_index);
+        break;
+      }
+
+
+      /* A write from a pattern file, pattern is already in write buffer: */
+      if (!cmd.cmd_read_flag && Patterns.usePatternFile())
+      {
+        rc = Native.writeFile(cmd.sd_ptr.fhandle, cmd.cmd_lba,
+                              cmd.cmd_xfersize,   write_buffer, cmd.jni_index);
+        break;
+      }
+
+
+      /* All the rest below requires serious data buffer work and is done here: */
+
+      /* Tell KeyMap about this data block: */
+      if (!key_map.storeDataBlockInfo(cmd.cmd_lba, cmd.cmd_xfersize, cmd.sd_ptr.dv_map))
+      {
+        /* One or more key blocks of this data block are in error. */
+        /* We should never get here since checks are done earlier: */
+        common.failure("Unexpected DV_ERROR block found.");
+      }
+
+      //cmd.cmd_print("hot stuff?");
+
+      /* The only problem I have here is that we always write from the BEGINNING */
+      /* of the write buffer, e.g. if storage compresses on 128 chunks, an 8k write
+      /* here always writes the same 8k. */
+
+      // But I only have a 16 buffer, meaning I do have one consecutive write buffer pattern
+      // That would require to allocate a full size*2 write buffer.
+      // TBD
+
+      //  if (compression_only)
+      //  {
+      //    long offset = cmd.cmd_lba % 8192;
+      //    common.ptod("offset: " + offset);
+      //    common.ptod("write_buffer: " + write_buffer);
+      //    rc = Native.noDedupAndWrite(cmd.sd_ptr.fhandle, cmd.cmd_lba,
+      //                                cmd.cmd_xfersize, write_buffer + offset, cmd.jni_index);
+      //    break;
+      //  }
+
+
+
+      ioWithDataPatterns(cmd);
+
+      break;
+    }
+
+
+    /* Keep track of outstanding i/o to prevent interrupt during shutdown: */
+    ios_currently_active--;
+
+
+    if (cmd.cmd_wg.user_class != null)
+      cmd.cmd_wg.user_class.postIO(usercmd);
+
+    /* For sequential stuff we need to keep track of i/o count: */
+    cmd.cmd_wg.subtract_io(cmd);
+
+    if (print_io_comp)
+      cmd.cmd_print("print_io_comp2");
+
+    /* For debugging, see ShowLba.java: */
+    if (fake_trace)
+      ShowLba.writeRecord(cmd);
+
+    return true;
+  }
+
+
+  /**
+   * I/O done for anything that requires a specific data pattern to be written, or
+   * a data pattern to be compared for Data Validation.
+   */
+  private void ioWithDataPatterns(Cmd_entry cmd)
+  {
+    if (Dedup.isDedup())
+      sd.dedup.dedupSdBlock(key_map, cmd);
+    else
+      key_map.setSdCompressionOnlyOffset(cmd.cmd_lba);
+
+    /* If block is already in error, return.  We will never touch that block again. */
+    if (Validate.isRealValidate() && !key_map.storeDataBlockInfo(cmd.cmd_lba, cmd.cmd_xfersize, cmd.sd_ptr.dv_map))
+      return;
+
+
+    /* Just a DV read? (No other reads will come here) */
+    if (cmd.cmd_read_flag)
+    {
+      // cleanup:
+      if (!Validate.isValidateForDedup() && !Validate.isRealValidate())
+        common.failure("This simple read call should never make it here!");
+
+
+      if (cmd.type_of_dv_read != Validate.FLAG_PENDING_READ)
+        cmd.type_of_dv_read = Validate.FLAG_NORMAL_READ;
+
+      readAndValidateBlock(cmd);
+
+      if (cmd.type_of_dv_read == Validate.FLAG_PENDING_READ)
+        saveLastTod(Timestamp.PENDING_READ);
+      else if (cmd.type_of_dv_read == Validate.FLAG_PENDING_REREAD)
+        saveLastTod(Timestamp.PENDING_REREAD);
+      else
+        saveLastTod(Timestamp.READ_ONLY);
+
+
+      /* We must unbusy the map, but during journal recovery the key may have changed: */
+      if (Validate.isRealValidate())
+      {
+        if (cmd.type_of_dv_read == Validate.FLAG_PENDING_READ)
+        {
+          if (!key_map.storeDataBlockInfo(cmd.cmd_lba, cmd.cmd_xfersize, cmd.sd_ptr.dv_map))
+            common.failure("Unexpected key block state for lba 0x%08x", cmd.cmd_lba);
+        }
+        key_map.storeKeys();
+      }
+      return;
+    }
+
+
+    /* This is a write, read it first, except when we use DV for Dedup only: */
+    if (Validate.isRealValidate() && key_map.anyDataToCompare() && !Validate.isNoPreRead())
+    {
+      cmd.type_of_dv_read = Validate.FLAG_PRE_READ;
+      readAndValidateBlock(cmd);
+      saveLastTod(Timestamp.PRE_READ);
+      if (rc != 0)
+      {
+        key_map.storeKeys();
+        return;
+      }
+    }
+
+    /* Do a write with required data patterns, including DV: */
+    patternWrite(cmd);
+    saveLastTod(Timestamp.WRITE);
+
+    /* After a write (and maybe journal write) is done update the keys in the DV_map: */
+    if (Validate.isRealValidate() || Validate.isValidateForDedup())
+    {
+      /* Skip read-immediate if the write failed: */
+      if (rc == 0 && Validate.isImmediateRead())
+      {
+        cmd.type_of_dv_read = Validate.FLAG_READ_IMMEDIATE;
+        readAndValidateBlock(cmd);
+        saveLastTod(Timestamp.READ_IMMED);
+      }
+
+      /* storeKeys() also unbusies the blocks: */
+      key_map.storeKeys();
+      if (sd.dedup != null)
+        sd.dedup.countDedup(key_map, sd.dv_map);
+    }
+  }
+
+
+  /**
+   * Read a block and Validate its contents.
+   */
+  private void readAndValidateBlock(Cmd_entry cmd)
+  {
+    /* This is a Data Validation read, but if we don't know anything about */
+    /* this block only read and forget about the contents:                 */
+    if (!key_map.anyDataToCompare())
+    {
+      rc = Native.readFile(cmd.sd_ptr.fhandle, cmd.cmd_lba,
+                           cmd.cmd_xfersize,   read_buffer, cmd.jni_index);
+      return;
+    }
+
+
+    if (cmd.type_of_dv_read == Validate.FLAG_PENDING_READ)
+    {
+      if (HelpDebug.doAfterCount("corruptDuringPendingRead"))
+        HelpDebug.corruptBlock(cmd.sd_ptr.fhandle, (int) cmd.cmd_xfersize, cmd.cmd_lba);
+    }
+
+    /* This call reads and validates 'n' key blocks: */
+    rc = Native.multiKeyReadAndValidateBlock(cmd.sd_ptr.fhandle,
+                                             data_flag | cmd.type_of_dv_read,
+                                             0,
+                                             cmd.cmd_lba,
+                                             (int) cmd.cmd_xfersize,
+                                             read_buffer,
+                                             key_map.getKeyCount(),
+                                             key_map.getKeys(),
+                                             key_map.getCompressions(),
+                                             key_map.getDedupsets(),
+                                             cmd.sd_ptr.sd_name8,
+                                             cmd.jni_index);
+
+    if (cmd.type_of_dv_read == Validate.FLAG_PENDING_READ && rc == 0)
+    {
+      ErrorLog.plog("Pending key block at lba 0x%08x key 0x%02x is OK.",
+                    cmd.cmd_lba, sd.dv_map.dv_get(cmd.cmd_lba) & 0x7f);
+      common.ptod("Pending key block at lba 0x%08x key 0x%02x is OK.",
+                  cmd.cmd_lba, sd.dv_map.dv_get(cmd.cmd_lba) & 0x7f);
+    }
+
+
+
+    /* If this was a corruption of a journal recovery pending read we must reread */
+    /* the block and check again if the key had changed:                          */
+    else if (cmd.type_of_dv_read == Validate.FLAG_PENDING_READ && rc == 60003)
+    {
+      //for (int i = 0; i < key_map.getKeyCount(); i++)
+      //{
+      //  common.ptod("key_map1: %08x %02x", cmd.cmd_lba, key_map.getKeys()[i]);
+      //}
+
+      /* BadKeyBlock can have modified the key. Get the new value: */
+      /* If the block is now in error, or now unknown, skip:       */
+      if (!key_map.storeDataBlockInfo(cmd.cmd_lba, cmd.cmd_xfersize, cmd.sd_ptr.dv_map) ||
+          !key_map.anyDataToCompare())
+      {
+        rc = 0;
+        return;
+      }
+
+      /* A changed key also requires a changed dedupset: */
+      if (Dedup.isDedup())
+        cmd.sd_ptr.dedup.dedupSdBlock(key_map, cmd);
+
+
+      //for (int i = 0; i < key_map.getKeyCount(); i++)
+      //{
+      //  common.ptod("key_map2: %08x %02x", cmd.cmd_lba, key_map.getKeys()[i]);
+      //}
+
+      /* If BadKeyBlock told us to read the key block again, but now with */
+      /* different key, do so:                                            */
+      Byte flag = sd.dv_map.journal.before_map.pending_map.get(cmd.cmd_lba);
+      if (flag == null)
+        common.failure("Invalid pending map state");
+      int pending_flag = flag & 0xff;
+      if (pending_flag == DV_map.PENDING_KEY_REREAD)
+      {
+        // this one no longer makes sense to me ???
+        if (HelpDebug.doAfterCount("corruptAfterPendingRead"))
+          HelpDebug.corruptBlock(cmd.sd_ptr.fhandle, (int) cmd.cmd_xfersize, cmd.cmd_lba);
+
+        /* Read the block again, corruptions will be thrown out by BadSector: */
+        cmd.type_of_dv_read = Validate.FLAG_PENDING_REREAD;
+        rc = Native.multiKeyReadAndValidateBlock(cmd.sd_ptr.fhandle,
+                                                 data_flag | cmd.type_of_dv_read,
+                                                 0, cmd.cmd_lba,
+                                                 (int) cmd.cmd_xfersize,
+                                                 read_buffer,
+                                                 key_map.getKeyCount(),
+                                                 key_map.getKeys(),
+                                                 key_map.getCompressions(),
+                                                 key_map.getDedupsets(),
+                                                 cmd.sd_ptr.sd_name8,
+                                                 cmd.jni_index);
+      }
+    }
+
+    if (rc == 0)
+      key_map.countRawReadAndValidates(cmd.sd_ptr, cmd.cmd_lba);
   }
 
 
 
   /**
-   * Translate array of CMD_entry's to an array of longs.
-   *
-   * This array business is done to save cpu cycles during high iops when
-   * there's always a load of ios waiting in the fifos.
-   * This especially eliminates JNI call overhead by calling JNI only once
-   * for ten ios instead of for each i/o.
-   *
-   * The consequence is however that the i/o order as they arrive from
-   * WG_task is no longer honored (except for sequential, where the LBA is
-   * determined in JNI.
-   * e.g. WG_task sends i/o as blocks 5,10,15,20
-   * If each IO_task gets a burst of TWO, one IO_task does 5 and 10, and
-   * the other 15 and 20. Resulted order likely: 5,15,10,20
-   * However since nowhere in existing code (except sequential) there is
-   * any dependency to execution order, this is fine.
-   *
-   * Replay and DV however do only a burst of one, therefore guaranteeing
-   * the order.
-   *
+   * Write with required data patterns, including DV.
    */
-  public void cmd_array_xlate(int burst)
+  private void patternWrite(Cmd_entry cmd)
   {
-    int i = 0;
-    int offset = 0;
-
-    /* For debugging, try to see if we need to force an error: */
-    boolean attempt_force = Validate.attemptForcedError();
-
-    try
+    /* Increment the keys so that we can write:      */
+    /* (A block with an error will NOT be rewritten) */
+    if (Validate.isValidate() && !key_map.incrementKeys())
     {
-      for (i = 0; i < burst; i++)
-      {
-        Cmd_entry cmd = cmd_array[i];
-        offset = CMD_FAST_LONGS * i;
-        cmd_fast[ offset + CMD_READ_FLAG ] = (cmd.cmd_read_flag) ? 1 : 0;
-        cmd_fast[ offset + CMD_HIT       ] = (cmd.cmd_hit) ? 1 : 0;
-
-        /* DV and replay always specify specific seek address.       */
-        /* If cmd_rand is set to 0 the sequential lba is set in JNI. */
-        if (Validate.isValidate() || SlaveJvm.isReplay())
-        {
-          cmd_fast[ offset + CMD_RAND    ] = 1;
-          if (sd.isTapeDrive())
-            cmd_fast[ offset + CMD_RAND  ] = 2;
-        }
-
-        else
-        {
-          /* Random: 1, Sequential: 0, Seq eof: 2 */
-          if (cmd.cmd_rand)
-            cmd_fast[ offset + CMD_RAND] = 1;
-          else if (cmd.cmd_wg.seekpct >= 0)
-            cmd_fast[ offset + CMD_RAND] = 0;
-          else
-            cmd_fast[ offset + CMD_RAND] = 2;
-        }
-
-        cmd_fast[ offset + CMD_LBA       ] = cmd.cmd_lba;
-        cmd_fast[ offset + CMD_XFERSIZE  ] = cmd.cmd_xfersize;
-        cmd_fast[ offset + DV_KEY        ] = cmd.dv_key;
-        cmd_fast[ offset + WG_NUM        ] = cmd.cmd_wg.workload_number;
-
-        /* Force a DV error after 'n' reads: */
-        if (Validate.isValidate() && (cmd.cmd_read_flag || cmd.dv_pre_read) && !debug_write)
-        {
-          if (attempt_force && Validate.forceError(sd, null, cmd.cmd_lba, cmd.cmd_xfersize))
-            cmd_fast[ offset + DV_KEY    ] = DV_map.DV_ERROR;  // 127: block is in error
-        }
-
-        /* Force a short block write after 'n' ios: */
-        if (Validate.isValidate() && debug_write && !cmd.cmd_read_flag)
-        {
-          if (attempt_force && Validate.forceError(sd, null, cmd.cmd_lba, cmd.cmd_xfersize))
-          {
-            forced_short_write = true;
-            cmd_fast[ offset + CMD_XFERSIZE  ] /= 2;
-            cmd.cmd_print(cmd.sd_ptr, "forced");
-            SlaveJvm.sendMessageToConsole("forced 'DV_DEBUG_WRITE_ERROR' write error to lba: " +
-                                          String.format("%08x", cmd_fast[ offset + CMD_LBA ]));
-          }
-        }
-
-        //if (!cmd.cmd_read_flag)
-        //  cmd_fast[ offset + CMD_XFERSIZE  ] = 1024;
-      }
-
+      common.where();
+      return;
     }
 
-    catch (Exception e)
+    /* Write pre-keys to Journal file: */
+    if (Validate.isJournaling())
+      key_map.writeBeforeJournalImage();
+
+
+    // long set = key_map.getDedupsets()[0];
+    // //if (Dedup.isDuplicate(set))
+    //   common.ptod("multiKeyWrite: %4d  %016x %08x %s", Dedup.getSet(set),
+    //               set, cmd.cmd_lba, Dedup.xlate(set));
+
+    /* If we do 'compression only' pass a zero buffer.              */
+    /* This will inside of JNI be translated to writing from the    */
+    /* data pattern buffer, avoiding constant copies to the buffer. */
+    //long buffer = (!Validate.isValidate() && compression_only) ? 0 : write_buffer;
+
+    // It appeared that with lots of threads I'd get too much Dedup.
+    // however, even removing buffer=0 I still get the same problem
+    // And this is also with compratio=n
+    // in other words: something's wrong, big time!!
+    //buffer = write_buffer;
+
+    /* Note that even though this is called 'multi key', there may be only ONE: */
+    long tod = (Validate.isRealValidate()) ? System.currentTimeMillis() : 0;
+    rc = 0;
+
+
+    //  for (int i = 0; i < key_map.getKeyCount(); i++)
+    //  {
+    //    common.ptod("key_map2: keys: %2d  %,16d %02x %016x", key_map.getKeyCount(),
+    //                cmd.cmd_lba, key_map.getKeys()[i], key_map.getDedupsets()[i]);
+    //  }
+
+    /* When this triggers during a write of a duplicate, nobody will notice! */
+    if (!HelpDebug.doAfterCount("skipWriteAfter"))
     {
-      common.where(16);
-      common.ptod("burst: " + burst);
-      common.ptod("i:                " + i);
-      common.ptod("offset:           " + offset);
-      common.ptod("burst:            " + burst);
-      common.ptod("cmd_array.length: " + cmd_array.length);
-      common.ptod("cmd_fast.length:  " + cmd_fast.length);
-      common.failure(e);
+      rc  = Native.multiKeyFillAndWriteBlock(cmd.sd_ptr.fhandle,
+                                             tod,
+                                             data_flag,               // int
+                                             0,                       // file_start_lba
+                                             cmd.cmd_lba,             // file_lba
+                                             (int) cmd.cmd_xfersize,  // data_length
+                                             key_map.pattern_lba,
+                                             key_map.pattern_length,
+                                             write_buffer,
+                                             key_map.getKeyCount(),
+                                             key_map.getKeys(),
+                                             key_map.getCompressions(),
+                                             key_map.getDedupsets(),
+                                             cmd.sd_ptr.sd_name8,
+                                             cmd.jni_index);
     }
+
+    if (HelpDebug.doAfterCount("corruptAfterWrite"))
+      HelpDebug.corruptBlock(cmd.sd_ptr.fhandle, (int) cmd.cmd_xfersize, cmd.cmd_lba);
+
+    if (HelpDebug.doForLba("corruptLbaAfterWrite", cmd.cmd_lba, cmd.cmd_xfersize))
+    {
+      HelpDebug.corruptBlock(cmd.sd_ptr.fhandle, (int) cmd.cmd_xfersize, cmd.cmd_lba);
+      common.failure("corruptLbaAfterWrite");
+    }
+
+    /* When the write failed writeAfterJournalImage() will skip the journal write: */
+    /* Write post-keys to Journal: */
+    if (Validate.isJournaling())
+      key_map.writeAfterJournalImage();
+
+    /* Count the number of key blocks written: */
+    key_map.countRawWrites(cmd.sd_ptr, cmd.cmd_lba);
   }
 
 
+
+  public long getPids()
+  {
+    return pid_and_lwp;
+  }
+  public void setStreamContext(StreamContext sc, int thread)
+  {
+    stream_context = sc;
+    if (stream_context != null)
+      common.ptod("StreamContext for thread=%02d; %s", thread, sc);
+  }
+
+  /**
+  *
+  */
   private void initialize()
   {
-    if (common.get_debug(common.BURST_OF_ONE)  ||
-        common.get_debug(common.ORACLE)        ||
-        common.get_debug(common.PRINT_EACH_IO) ||
-        SlaveJvm.isReplay()                    ||
-        sd.isTapeDrive())
-      max_cmd_burst = 1;
-
-    /* Allocate Java read and write buffers only for Data Validation: */
-    if (Validate.isValidate())
+    /* Though technically there may not always be a need for a KeyMap, */
+    /* it allows for more common code use:                             */
+    if (Validate.isRealValidate() || Validate.isValidateForDedup())
     {
-      /* Data Validation requires us to send io one at the time to jni: */
-      max_cmd_burst = 1;
-
-      allocated_buffer_size = SlaveWorker.work.maximum_xfersize;
-      read_buffer  = Native.allocBuffer(allocated_buffer_size);
-      write_buffer = Native.allocBuffer(allocated_buffer_size);
+      if (ReplayInfo.isReplay())
+        key_map = new KeyMap(0l, key_blocksize, ReplayDevice.getAllDevicesMaxXfersize());
+      else
+        key_map = new KeyMap(0l, key_blocksize, max_sd_xfersize);
     }
 
-    else if (SlaveJvm.isReplay())
-    {
-      allocated_buffer_size = ReplayDevice.getMaxXfersize();
-      read_buffer  =
-      write_buffer = Native.allocBuffer(allocated_buffer_size);
-    }
+    else if (ReplayInfo.isReplay() && Validate.isValidateForDedup())
+      key_map = new KeyMap(0l, key_blocksize, ReplayDevice.getAllDevicesMaxXfersize());
 
     else
+      key_map = new KeyMap();
+
+    if (common.onSolaris())
+      pid_and_lwp = Native.getSolarisPids();
+
+    /* Always allocate a read buffer. Write buffer only when needed: */
+    allocated_buffer_size = max_sd_xfersize;
+
+    /* Dedup, when not using multiples of dedupunit needs extra space:     */
+    /* By doing TWICE the max xfersize we make sure the buffer is at least */
+    /* a multiple of the dedupunit.                                        */
+    if (Dedup.isDedup())
+      allocated_buffer_size *= 2;
+    //if (compression_only)
+    //  allocated_buffer_size *= 2;
+
+    if (ReplayInfo.isReplay())
     {
-      allocated_buffer_size = SlaveWorker.work.maximum_xfersize;
-      read_buffer  =
-      write_buffer = Native.allocBuffer(allocated_buffer_size);
+      allocated_buffer_size = ReplayDevice.getAllDevicesMaxXfersize();
+
+      /* With Dedup we can get some crazy data patterns trying to align the */
+      /* current xfersize with dedupunit. Just be generous here:            */
+      if (Dedup.isDedup())
+        allocated_buffer_size *=2;
     }
 
-    /* Copy the default data pattern to the native i/o buffer. */
-    /* This also includes the compression pattern if needed:   */
-    int[] pattern = DV_map.get_pattern(0);
-    if (allocated_buffer_size < pattern.length * 4)
-      common.failure("Buffer size smaller than data pattern buffer: " +
-                     allocated_buffer_size + "/" + (pattern.length * 4));
+    read_buffer = Native.allocBuffer((int) allocated_buffer_size);
+    if (doWeNeedWriteBuffer())
+    {
+      write_buffer = Native.allocBuffer((int) allocated_buffer_size);
+      Patterns.storeStartingSdPattern(write_buffer, (int) allocated_buffer_size);
+    }
 
-    Native.array_to_buffer(pattern, write_buffer);
-
-    /* Allocate io burst tables for jni: */
-    cmd_array = new Cmd_entry[max_cmd_burst];
-    cmd_fast  = new long[max_cmd_burst * CMD_FAST_LONGS];
+    tmonitor = new ThreadMonitor("IO_task", (sd != null) ? sd.sd_name : "shared", null);
 
     /* Communicate status of task: */
     tn.task_set_start_complete();
-    tn.task_set_running();
+    tn.waitForMasterGo();
 
     //common.ptod("Starting IO_task " + tn.task_name);
   }
 
-  public int getCurrentMultiCount()
+
+  // This could be replaced by just having a boolean set when we are waiting for fifo?
+  public int getActiveCount()
   {
-    return ios_currently_in_multi;
+    return ios_currently_active;
   }
 
+  /**
+   * Optionally save the last tod this block was read/written.
+   * This of course is ONLY for Data Validation.
+   */
+  private void saveLastTod(long type)
+  {
+    if (!Validate.isStoreTime())
+      return;
+    if (rc == 0)
+      key_map.saveTimestamp(type);
+  }
 
   public static void main(String[] args)
   {
-    Random[] rand = new Random[100];
-
-    for (int i = 0; i < rand.length; i++)
-    {
-      rand[i] = new Random(i);
-      common.ptod("rand: " + rand[i].nextInt(1000));
-    }
   }
 }
 

@@ -1,67 +1,60 @@
 package Vdb;
-
-/*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
- */
-
-
-/*
- * Author: Henk Vandenbergh.
- */
+    
+/*  
+ * Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved. 
+ */ 
+    
+/*  
+ * Author: Henk Vandenbergh. 
+ */ 
 
 import Utils.Format;
 
 
 /**
  * This class handles vdbench performance measurements for debugging
+ *
+ * This code does not work anymore.
  */
 public class Timers
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c = 
+  "Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved."; 
 
+  private long    tod_before;
+  private long    tod_total;
+  private long    tod_counts;
+  private long    first_tod;
+  private long    last_tod;
+  private String  label;
 
-  long   tod_before;
-  long   tod_total;
-  long   tod_counts;
-  long   first_tod;
-  long   last_tod;
-  boolean  active;
-  String label;
+  private final   static boolean active = common.get_debug(common.TIMERS);;
 
   public Timers(String label_in)
   {
     tod_total  = 0;
     tod_counts = 0;
     label      = label_in;
-    active     = common.get_debug(common.TIMERS);
   }
 
+  public long simpleTime()
+  {
+    long rc = System.nanoTime();
+    if (rc == 0)
+      common.failure("Timers(): zero nanoTime");
+    return rc;
+  }
 
   public void before()
   {
     if (active)
     {
-      if (tod_counts == 0)
-        first_tod  = Native.get_simple_tod();
-      tod_before = Native.get_simple_tod();
+      synchronized (this)
+      {
+        if (tod_counts == 0)
+          first_tod = simpleTime();
+        tod_before = simpleTime();
+      }
     }
   }
 
@@ -70,42 +63,57 @@ public class Timers
   {
     if (active)
     {
-      if (tod_before == 0)
-        common.failure("Timers.after(): previous tod equals zero");
-      last_tod = Native.get_simple_tod();
-      tod_total += last_tod - tod_before;
-      tod_before = 0;
-      tod_counts++;
+      synchronized (this)
+      {
+        if (tod_before == 0)
+          common.failure("Timers.after(): previous tod equals zero");
+        last_tod = simpleTime();
+        tod_total += last_tod - tod_before;
+        tod_before = 0;
+        tod_counts++;
+      }
     }
   }
 
-  public void add(long time)
+  public void xadd(long time)
   {
     if (active)
     {
-      if (tod_counts == 0)
-        first_tod  = Native.get_simple_tod();
-      last_tod   = Native.get_simple_tod();
-      tod_total += time;
-      tod_counts++;
+      synchronized (this)
+      {
+        if (tod_counts == 0)
+          first_tod  = simpleTime();
+        last_tod   = simpleTime();
+        tod_total += time;
+        tod_counts++;
+      }
     }
   }
 
 
+  /**
+   * Report:
+   * - what percentage of the total elapsed time we were somewhere in the Fifo
+   * code.
+   * - how long for each call were we in the Fifo code.
+   */
   public void print()
   {
-    if (active)
+    if (!active)
+      return;
+
+    try
     {
-      try
-      {
-      common.ptod(Format.f("++Timers: %-20s ", label) +
-                  Format.f("%6.2f%%;", (double) tod_total * 100 / (last_tod - first_tod)) +
-                  Format.f(" avg %6d us", tod_counts > 0 ? tod_total / tod_counts : 0));
-      }
-      catch (Exception e)
-      {
-        common.ptod("Exception in Timers.print(): " + e.toString());
-      }
+      common.ptod("+Timers: %-20s calls: %8d elapsed%%: %6.2f; avg time per set: %10d ns; %10d us",
+                  label,
+                  tod_counts,
+                  (tod_counts == 0) ? 0 : (double) tod_total * 100 / (last_tod - first_tod),
+                  (tod_counts == 0) ? 0 : tod_total / tod_counts,
+                  (tod_counts == 0) ? 0 : tod_total / tod_counts / 1000);
+    }
+    catch (Exception e)
+    {
+      common.ptod("Exception in Timers.print(): " + e.toString());
     }
   }
 }

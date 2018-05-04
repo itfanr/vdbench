@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -40,11 +22,10 @@ import Utils.*;
  * On a slave, all workloads and all anchors are accumulated in one set
  * of counters for each FwgThread.
  */
-public class FwdStats extends VdbObject implements java.io.Serializable
+public class FwdStats implements java.io.Serializable
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
-
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   public FwdCounter read    = new FwdCounter(this);
   public FwdCounter write   = new FwdCounter(this);
@@ -52,6 +33,7 @@ public class FwdStats extends VdbObject implements java.io.Serializable
   public FwdCounter create  = new FwdCounter(this);
   public FwdCounter getattr = new FwdCounter(this);
   public FwdCounter setattr = new FwdCounter(this);
+  public FwdCounter access  = new FwdCounter(this);
   public FwdCounter open    = new FwdCounter(this);
   public FwdCounter close   = new FwdCounter(this);
   public FwdCounter copy    = new FwdCounter(this);
@@ -69,24 +51,30 @@ public class FwdStats extends VdbObject implements java.io.Serializable
   private static String all_fields;
 
   private static FwdPrint inp  = new FwdPrint("Interval",   "",      "10.0");
-  private static FwdPrint acp  = new FwdPrint("ReqstdOps.", "rate",  "6.1", "resp",  "5.2");
+  private static FwdPrint acp  = new FwdPrint("ReqstdOps.", "rate",  "6.1", "resp",  "6.3");
   private static FwdPrint cpup = new FwdPrint("cpu%",       "total", "5.1", "sys",   "4.2");
-  private static FwdPrint rdp  = new FwdPrint("read",       "rate",  "6.1", "resp",  "5.2");
-  private static FwdPrint wrp  = new FwdPrint("write",      "rate",  "6.1", "resp",  "5.2");
+  private static FwdPrint rdp  = new FwdPrint("read",       "rate",  "6.1", "resp",  "6.3");
+  private static FwdPrint wrp  = new FwdPrint("write",      "rate",  "6.1", "resp",  "6.3");
+  private static FwdPrint pctp = new FwdPrint(" read",      "pct",   "5.1");
   private static FwdPrint mbp  = new FwdPrint("mb/sec",     "read",  "5.2", "write", "5.2");
   private static FwdPrint mbt  = new FwdPrint("mb/sec",     "total", "6.2");
-  private static FwdPrint xfp  = new FwdPrint("xfer",       "size",  "6.0");
-  private static FwdPrint mdp  = new FwdPrint("mkdir",      "rate",  "5.1", "resp",  "5.2");
-  private static FwdPrint ddp  = new FwdPrint("rmdir",      "rate",  "5.1", "resp",  "5.2");
-  private static FwdPrint crp  = new FwdPrint("create",     "rate",  "5.1", "resp",  "5.2");
-  private static FwdPrint opp  = new FwdPrint("open",       "rate",  "5.1", "resp",  "5.2");
-  private static FwdPrint clp  = new FwdPrint("close",      "rate",  "5.1", "resp",  "5.2");
-  private static FwdPrint delp = new FwdPrint("delete",     "rate",  "5.1", "resp",  "5.2");
-  private static FwdPrint getp = new FwdPrint("getattr",    "rate",  "5.1", "resp",  "5.2");
-  private static FwdPrint setp = new FwdPrint("setattr",    "rate",  "5.1", "resp",  "5.2");
-  private static FwdPrint copp = new FwdPrint("copy",       "rate",  "5.1", "resp",  "5.2");
-  private static FwdPrint movp = new FwdPrint("move",       "rate",  "5.1", "resp",  "5.2");
+  private static FwdPrint xfp  = new FwdPrint("xfer",       "size",  "7.0");
+  private static FwdPrint mdp  = new FwdPrint("mkdir",      "rate",  "5.1", "resp",  "6.3");
+  private static FwdPrint ddp  = new FwdPrint("rmdir",      "rate",  "5.1", "resp",  "6.3");
+  private static FwdPrint crp  = new FwdPrint("create",     "rate",  "5.1", "resp",  "6.3");
+  private static FwdPrint opp  = new FwdPrint("open",       "rate",  "5.1", "resp",  "6.3");
+  private static FwdPrint clp  = new FwdPrint("close",      "rate",  "5.1", "resp",  "6.3");
+  private static FwdPrint delp = new FwdPrint("delete",     "rate",  "5.1", "resp",  "6.3");
+  private static FwdPrint getp = new FwdPrint("getattr",    "rate",  "5.1", "resp",  "6.3");
+  private static FwdPrint setp = new FwdPrint("setattr",    "rate",  "5.1", "resp",  "6.3");
+  private static FwdPrint accs = new FwdPrint("access",     "rate",  "5.1", "resp",  "6.3");
+  private static FwdPrint copp = new FwdPrint("copy",       "rate",  "5.1", "resp",  "6.3");
+  private static FwdPrint movp = new FwdPrint("move",       "rate",  "5.1", "resp",  "6.3");
 
+  private static int time_travel_window = checkTimeTravel();
+  private static int time_travel_count  = 0;
+
+  private static boolean skip_response_times = common.get_debug(common.NO_RESPONSE_TIMES);
 
   public FwdStats()
   {
@@ -98,27 +86,46 @@ public class FwdStats extends VdbObject implements java.io.Serializable
    */
   public static void count(int operation, long start)
   {
+    //common.where();
+    //start += 200000;
+
     long end = Native.get_simple_tod();
 
+    /* This is a way around too much timetravel, just setting all response times to zero: */
+    if (skip_response_times)
+      end = start;
+
     if (start > end)
-      common.failure("FwdStats.count(): start time greater than end time: " +
-                     start + " " + end + " " + (start - end));
+      start = timeTravel(start, end);
+
     FwgThread thread = (FwgThread) Thread.currentThread();
     thread.per_thread_stats.add(operation, end - start, 0);
   }
+
   public static void countXfer(int operation, long start, int xfersize)
   {
+    //common.where();
+    //start += 200000;
+
     long end = Native.get_simple_tod();
 
+    /* This is a way around too much timetravel, just setting all response times to zero: */
+    if (skip_response_times)
+      end = start;
+
     if (start > end)
-      common.failure("FwdStats.count(): start time greater than end time: " +
-                     start + " " + end + " " + (start - end));
+      start = timeTravel(start, end);
 
     FwgThread thread = (FwgThread) Thread.currentThread();
     thread.per_thread_stats.add(operation, end - start, xfersize);
 
   }
 
+
+  //
+  // We could save some time here by having the CALLER specify instead of
+  // operation=read the actual 'read' FwdCounter
+  //
   private void add(int operation, long resp, int xfersize)
   {
     /* These are in order of expected frequency. 'switch' does not let me */
@@ -130,6 +137,7 @@ public class FwdStats extends VdbObject implements java.io.Serializable
     else if (operation == Operations.WRITE   ) write   .addResp(resp);
     else if (operation == Operations.GETATTR ) getattr .addResp(resp);
     else if (operation == Operations.SETATTR ) setattr .addResp(resp);
+    else if (operation == Operations.ACCESS  ) access  .addResp(resp);
     else if (operation == Operations.CREATE  ) create  .addResp(resp);
     else if (operation == Operations.MKDIR   ) mkdir   .addResp(resp);
     else if (operation == Operations.OPEN    ) open    .addResp(resp);
@@ -158,6 +166,7 @@ public class FwdStats extends VdbObject implements java.io.Serializable
     create  .accum(old.create  );
     getattr .accum(old.getattr );
     setattr .accum(old.setattr );
+    access  .accum(old.access  );
     open    .accum(old.open    );
     close   .accum(old.close   );
     delete  .accum(old.delete  );
@@ -182,6 +191,7 @@ public class FwdStats extends VdbObject implements java.io.Serializable
     create  .delta(nw.create  , old.create  );
     getattr .delta(nw.getattr , old.getattr );
     setattr .delta(nw.setattr , old.setattr );
+    access  .delta(nw.access  , old.access );
     open    .delta(nw.open    , old.open    );
     close   .delta(nw.close   , old.close   );
     delete  .delta(nw.delete  , old.delete  );
@@ -202,6 +212,7 @@ public class FwdStats extends VdbObject implements java.io.Serializable
     create  .copy(old.create  );
     getattr .copy(old.getattr );
     setattr .copy(old.setattr );
+    access  .copy(old.access );
     open    .copy(old.open    );
     close   .copy(old.close   );
     delete  .copy(old.delete  );
@@ -217,57 +228,89 @@ public class FwdStats extends VdbObject implements java.io.Serializable
   {
     DateFormat df = new SimpleDateFormat( "MMM dd, yyyy" );
     String now = df.format(new Date());
+
+    String aux0 = "";
+    String aux1 = "";
+    if (report == Report.getSummaryReport() || report == Report.getStdoutReport())
+    {
+      if (Report.getAuxReport() != null)
+      {
+        String[] aux = Report.getAuxReport().getSummaryHeaders();
+        aux0 = aux[0];
+        aux1 = aux[1];
+      }
+    }
+
     report.println("");
-    report.println(now + getHeader1());
-    report.println("            " + getHeader2());
+    report.println(now + getHeader1(CpuStats.isCpuReporting()) + aux0);
+    report.println("            " + getHeader2(CpuStats.isCpuReporting()) + aux1);
   }
 
-  private static String getHeader1()
+  public static String getShortHeader1()
+  {
+    String line = getHeader1(false);
+
+    return line.substring(inp .getHeader1().length());
+  }
+  public static String getHeader1(boolean cpu)
   {
     String line = "";
-    line += " " + inp .getHeader1();
-    line += " " + acp .getHeader1();
-    line += (CpuStats.isCpuReporting()) ? " " + cpup.getHeader1() : "";
-    line += " " + rdp .getHeader1();
-    line += " " + wrp .getHeader1();
-    line += " " + mbp .getHeader1();
-    line += " " + mbt .getHeader1();
-    line += " " + xfp .getHeader1();
-    line += " " + mdp .getHeader1();
-    line += " " + ddp .getHeader1();
-    line += " " + crp .getHeader1();
-    line += " " + opp .getHeader1();
-    line += " " + clp .getHeader1();
-    line += " " + delp.getHeader1();
-    line += " " + getp.getHeader1();
-    line += " " + setp.getHeader1();
-    //line += " " + copp.getHeader1();
-    //line += " " + movp.getHeader1();
+    line += inp .getHeader1();
+    line += acp .getHeader1();
+    line += (cpu) ? cpup.getHeader1() : "";
+    line += pctp.getHeader1();
+    line += rdp .getHeader1();
+    line += wrp .getHeader1();
+    line += mbp .getHeader1();
+    line += mbt .getHeader1();
+    line += xfp .getHeader1();
+    line += mdp .getHeader1();
+    line += ddp .getHeader1();
+    line += crp .getHeader1();
+    line += opp .getHeader1();
+    line += clp .getHeader1();
+    line += delp.getHeader1();
+
+    if (Operations.isOperationUsed(Operations.GETATTR)) line += getp.getHeader1();
+    if (Operations.isOperationUsed(Operations.SETATTR)) line += setp.getHeader1();
+    if (Operations.isOperationUsed(Operations.ACCESS))  line += accs.getHeader1();
+    if (Operations.isOperationUsed(Operations.COPY))    line += copp.getHeader1();
+    if (Operations.isOperationUsed(Operations.MOVE))    line += movp.getHeader1();
 
     return line;
   }
 
-  private static String getHeader2()
+  public static String getShortHeader2()
+  {
+    String line = getHeader2(false);
+
+    return line.substring(inp .getHeader2().length());
+  }
+
+  public static String getHeader2(boolean cpu)
   {
     String line = "";
-    line += " " + inp .getHeader2();
-    line += " " + acp .getHeader2();
-    line += (CpuStats.isCpuReporting()) ? " " + cpup.getHeader2() : "";
-    line += " " + rdp .getHeader2();
-    line += " " + wrp .getHeader2();
-    line += " " + mbp .getHeader2();
-    line += " " + mbt .getHeader2();
-    line += " " + xfp .getHeader2();
-    line += " " + mdp .getHeader2();
-    line += " " + ddp .getHeader2();
-    line += " " + crp .getHeader2();
-    line += " " + opp .getHeader2();
-    line += " " + clp .getHeader2();
-    line += " " + delp.getHeader2();
-    line += " " + getp.getHeader2();
-    line += " " + setp.getHeader2();
-    //line += " " + copp.getHeader2();
-    //line += " " + movp.getHeader2();
+    line += inp .getHeader2();
+    line += acp .getHeader2();
+    line += (cpu) ? cpup.getHeader2() : "";
+    line += pctp.getHeader2();
+    line += rdp .getHeader2();
+    line += wrp .getHeader2();
+    line += mbp .getHeader2();
+    line += mbt .getHeader2();
+    line += xfp .getHeader2();
+    line += mdp .getHeader2();
+    line += ddp .getHeader2();
+    line += crp .getHeader2();
+    line += opp .getHeader2();
+    line += clp .getHeader2();
+    line += delp.getHeader2();
+
+    if (Operations.isOperationUsed(Operations.GETATTR)) line += getp.getHeader2();
+    if (Operations.isOperationUsed(Operations.SETATTR)) line += setp.getHeader2();
+    if (Operations.isOperationUsed(Operations.ACCESS))  line += accs.getHeader2();
+    if (Operations.isOperationUsed(Operations.COPY))    line += copp.getHeader2();
+    if (Operations.isOperationUsed(Operations.MOVE))    line += movp.getHeader2();
 
     return line;
   }
@@ -280,44 +323,71 @@ public class FwdStats extends VdbObject implements java.io.Serializable
 
     printLine(report, kstat_cpu, Format.f("%d", Report.getInterval()));
   }
-  public void printLine(Report report, Kstat_cpu kc, String lbl)
+
+  /**
+   * Retrun the same line, but now without the interval in front.
+   */
+  public String printShortLine(Report report, Kstat_cpu kc, String lbl)
+  {
+    String line = printLine(report, kc, lbl);
+    return line.substring(inp .getData(lbl).length());
+  }
+  public String printLine(Report report, Kstat_cpu kc, String lbl)
   {
     double r_mb = r_bytes * 1000000. / elapsed / MB;
     double w_mb = w_bytes * 1000000. / elapsed / MB;
     long   xfersize = 0;
+    double rdpct    = 0;
 
     if (read.operations + write.operations > 0)
+    {
       xfersize = (r_bytes + w_bytes) / (read.operations + write.operations);
-    //common.ptod("writes:   " + writes);
-    //common.ptod("w_bytes:  " + w_bytes);
-    //common.ptod("xfersize: " + xfersize);
-    //common.ptod("w_mb:     " + w_mb);
+      rdpct    = read.operations * 100. / (read.operations + write.operations);
+    }
 
     String line = "";
-    line += " " + inp .getData(lbl);
-    line += " " + acp .getData(getTotalRate(), getTotalResp());
+    line += inp .getData(lbl);
+    line += acp .getData(getTotalRate(), getTotalResp());
 
-    if (CpuStats.isCpuReporting())
-      line += " " + cpup.getData(kc.user_pct() + kc.kernel_pct(), kc.kernel_pct());
+    if (CpuStats.isCpuReporting() && kc != null)
+      line += cpup.getData(kc.user_pct() + kc.kernel_pct(), kc.kernel_pct());
 
-    line += " " + rdp .getData(read   .rate(), read   .resp());
-    line += " " + wrp .getData(write  .rate(), write  .resp());
-    line += " " + mbp .getData(r_mb,           w_mb          );
-    line += " " + mbt .getData(r_mb + w_mb);
-    line += " " + xfp .getData(xfersize);
-    line += " " + mdp .getData(mkdir  .rate(), mkdir  .resp());
-    line += " " + ddp .getData(rmdir  .rate(), rmdir  .resp());
-    line += " " + crp .getData(create .rate(), create .resp());
-    line += " " + opp .getData(open   .rate(), open   .resp());
-    line += " " + clp .getData(close  .rate(), close  .resp());
-    line += " " + delp.getData(delete .rate(), delete .resp());
-    line += " " + getp.getData(getattr.rate(), getattr.resp());
-    line += " " + setp.getData(setattr.rate(), setattr.resp());
-    //line += " " + copp.getData(copy   .rate(), copy   .resp());
-    //line += " " + movp.getData(move   .rate(), move   .resp());
+    line += pctp.getData(rdpct);
+    line += rdp .getData(read   .rate(), read   .resp());
+    line += wrp .getData(write  .rate(), write  .resp());
+    line += mbp .getData(r_mb,           w_mb          );
+    line += mbt .getData(r_mb + w_mb);
+    line += xfp .getData(xfersize);
+    line += mdp .getData(mkdir  .rate(), mkdir  .resp());
+    line += ddp .getData(rmdir  .rate(), rmdir  .resp());
+    line += crp .getData(create .rate(), create .resp());
+    line += opp .getData(open   .rate(), open   .resp());
+    line += clp .getData(close  .rate(), close  .resp());
+    line += delp.getData(delete .rate(), delete .resp());
 
-    String tod = common.tod();
-    report.println(tod + line);
+    if (Operations.isOperationUsed(Operations.GETATTR))
+        line += getp.getData(getattr.rate(), getattr.resp());
+    if (Operations.isOperationUsed(Operations.SETATTR))
+        line += setp.getData(setattr.rate(), setattr.resp());
+    if (Operations.isOperationUsed(Operations.ACCESS))
+        line += accs.getData(access. rate(), access .resp());
+    if (Operations.isOperationUsed(Operations.COPY))
+        line += copp.getData(copy   .rate(), copy   .resp());
+    if (Operations.isOperationUsed(Operations.MOVE))
+        line += movp.getData(move   .rate(), move   .resp());
+
+    if (report == null)
+      return line;
+
+    if (report == Report.getSummaryReport() || report == Report.getStdoutReport())
+    {
+      if (Report.getAuxReport() != null)
+        line += Report.getAuxReport().getSummaryData();
+    }
+
+    report.println(common.tod() + line);
+
+    return null;
   }
 
   public long getElapsed()
@@ -337,7 +407,7 @@ public class FwdStats extends VdbObject implements java.io.Serializable
   {
     double total = 0;
 
-    if (RD_entry.next_rd.rd_name.startsWith(RD_entry.FORMAT_RUN))
+    if (RD_entry.next_rd.rd_name.startsWith(RD_entry.FSD_FORMAT_RUN))
       return write.rate();
     else
     {
@@ -351,6 +421,7 @@ public class FwdStats extends VdbObject implements java.io.Serializable
       if (isOperationRequested(Operations.RMDIR   )) total += rmdir   .rate();
       if (isOperationRequested(Operations.GETATTR )) total += getattr .rate();
       if (isOperationRequested(Operations.SETATTR )) total += setattr .rate();
+      if (isOperationRequested(Operations.ACCESS  )) total += access  .rate();
       if (isOperationRequested(Operations.COPY    )) total += copy    .rate();
       if (isOperationRequested(Operations.MOVE    )) total += move    .rate();
     }
@@ -358,16 +429,29 @@ public class FwdStats extends VdbObject implements java.io.Serializable
     return total;
   }
 
+  public long getTotalBytes()
+  {
+    return r_bytes + w_bytes;
+  }
+  public long getTotalBytesRead()
+  {
+    return r_bytes;
+  }
+  public long getTotalBytesWritten()
+  {
+    return w_bytes;
+  }
+
 
   /**
    * The totals include ONLY those operations that are requested in the
    * current RD_entry.
    */
-  private double getTotalResp()
+  public double getTotalResp()
   {
     double total = 0;
 
-    if (RD_entry.next_rd.rd_name.startsWith(RD_entry.FORMAT_RUN))
+    if (RD_entry.next_rd.rd_name.startsWith(RD_entry.FSD_FORMAT_RUN))
       return write.resp();
     else
     {
@@ -381,6 +465,7 @@ public class FwdStats extends VdbObject implements java.io.Serializable
       if (isOperationRequested(Operations.RMDIR))   total += rmdir   .response;
       if (isOperationRequested(Operations.GETATTR)) total += getattr .response;
       if (isOperationRequested(Operations.SETATTR)) total += setattr .response;
+      if (isOperationRequested(Operations.ACCESS))  total += access  .response;
       if (isOperationRequested(Operations.COPY))    total += copy    .response;
       if (isOperationRequested(Operations.MOVE))    total += move    .response;
     }
@@ -388,7 +473,6 @@ public class FwdStats extends VdbObject implements java.io.Serializable
     if (total == 0)
       return 0;
 
-    //common.ptod("total: " + total + " " + getTotalRate() + " " + elapsed);
     return(double) total / getTotalRate() / (elapsed / 1000.);
   }
 
@@ -397,7 +481,7 @@ public class FwdStats extends VdbObject implements java.io.Serializable
   {
     Histogram hist = new Histogram("default");
 
-    if (RD_entry.next_rd.rd_name.startsWith(RD_entry.FORMAT_RUN))
+    if (RD_entry.next_rd.rd_name.startsWith(RD_entry.FSD_FORMAT_RUN))
       hist.accumBuckets(write   .getHistogram());
     else
     {
@@ -411,6 +495,7 @@ public class FwdStats extends VdbObject implements java.io.Serializable
       if (isOperationRequested(Operations.RMDIR   )) hist.accumBuckets(rmdir   .getHistogram());
       if (isOperationRequested(Operations.GETATTR )) hist.accumBuckets(getattr .getHistogram());
       if (isOperationRequested(Operations.SETATTR )) hist.accumBuckets(setattr .getHistogram());
+      if (isOperationRequested(Operations.ACCESS  )) hist.accumBuckets(access  .getHistogram());
       if (isOperationRequested(Operations.COPY    )) hist.accumBuckets(copy    .getHistogram());
       if (isOperationRequested(Operations.MOVE    )) hist.accumBuckets(move    .getHistogram());
     }
@@ -474,6 +559,8 @@ public class FwdStats extends VdbObject implements java.io.Serializable
     if (read.operations + write.operations > 0)
       xfersize = (r_bytes + w_bytes) / (read.operations + write.operations);
 
+    double compratio = Validate.getCompressionRatio();
+
     Flat.put_col("Run",          RD_entry.next_rd.rd_name);
     Flat.put_col("Interval",     title);   // reqrate is filled in somehwere in RD_entry.
     Flat.put_col("rate",         getTotalRate());
@@ -502,10 +589,17 @@ public class FwdStats extends VdbObject implements java.io.Serializable
     Flat.put_col("Getattr_resp", getattr.resp());
     Flat.put_col("Setattr_rate", setattr.rate());
     Flat.put_col("Setattr_resp", setattr.resp());
+    Flat.put_col("Access_rate",  access.rate());
+    Flat.put_col("Access_resp",  access.resp());
     Flat.put_col("Copy_rate",    copy.rate());
     Flat.put_col("Copy_resp",    copy.resp());
     Flat.put_col("Move_rate",    move.rate());
     Flat.put_col("Move_resp",    move.resp());
+
+    if (compratio < 0)
+      Flat.put_col("compratio", "n/a");
+    else
+      Flat.put_col("compratio", compratio);
   }
 
 
@@ -517,7 +611,7 @@ public class FwdStats extends VdbObject implements java.io.Serializable
     LookupAnchor anchor = new FwdNamedData().getAnchor();
 
     /*
-      NOTE: any changes here must also be made
+      NOTE: any changes here must also be made below and
             in /swat_mon/Utils/FwdNamedData.java
       IN OTHER WORDS: you must run both versions at the same time.
      */
@@ -545,6 +639,8 @@ public class FwdStats extends VdbObject implements java.io.Serializable
     new Lookup(anchor, "Getattr_resp");
     new Lookup(anchor, "Setattr_rate");
     new Lookup(anchor, "Setattr_resp");
+    new Lookup(anchor, "Access_rate" );
+    new Lookup(anchor, "Access_resp" );
     new Lookup(anchor, "Copy_rate"   );
     new Lookup(anchor, "Copy_resp"   );
     new Lookup(anchor, "Move_rate"   );
@@ -611,6 +707,8 @@ public class FwdStats extends VdbObject implements java.io.Serializable
     data += Format.f("%.3f ", getattr.resp() * elapsed / 1000);
     data += Format.f("%.3f ", setattr.rate() * elapsed / 1000);
     data += Format.f("%.3f ", setattr.resp() * elapsed / 1000);
+    data += Format.f("%.3f ", access.rate()  * elapsed / 1000);
+    data += Format.f("%.3f ", access.resp()  * elapsed / 1000);
     data += Format.f("%.3f ", copy.rate()    * elapsed / 1000);
     data += Format.f("%.3f ", copy.resp()    * elapsed / 1000);
     data += Format.f("%.3f ", move.rate()    * elapsed / 1000);
@@ -621,6 +719,48 @@ public class FwdStats extends VdbObject implements java.io.Serializable
     fwd_bin_file.put_array(fd.getAnchorName(), Bin.NAMED_HEADER);
     fwd_bin_file.put_array(fd.export(), Bin.NAMED_LONGS);
 
+    /* This is needed because the channel buffer flush is not done at close */
     fwd_bin_file.flush();
   }
+
+  private static int checkTimeTravel()
+  {
+    if (!Fget.file_exists(ClassPath.classPath(), "timetravel.txt"))
+      return 0;
+    String[] lines = Fget.readFileToArray(ClassPath.classPath(), "timetravel.txt");
+    if (lines.length == 1)
+    {
+      common.ptod("checkTimeTravel: " + lines[0]);
+      return Integer.parseInt(lines[0].trim());
+    }
+    return 0;
+  }
+
+  private static synchronized long timeTravel(long start, long end)
+  {
+    long early = start - end;
+    if (time_travel_window  == 0)
+      common.failure("FwdStats.count(): start time greater than end time: " +
+                     start + " " + end + " " + (start - end));
+
+    if (time_travel_window < early)
+      common.failure("FwdStats.count(): start time greater than end time: " +
+                     start + " " + end + " " + (start - end) +
+                     "; greater than allowed time travel window");
+    if (time_travel_count == 0)
+      common.ptod("FwdStats.count(): start time greater than end time. " +
+                  "Only 1000 occurrences are allowed.");
+
+    if (time_travel_count++ < 100)
+      common.ptod("FwdStats.count(): start time greater than end time: " +
+                     start + " " + end + " " + (start - end));
+
+    if (time_travel_count > 1000)
+      common.failure("FwdStats.count(): start time greater than end time: " +
+                     start + " " + end + " " + (start - end) + "; Maximum 1000 allowed");
+
+
+    return end;
+  }
 }
+

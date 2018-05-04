@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -40,10 +22,11 @@ import Utils.Fput;
  */
 class Tnfe_data
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.";
 
-  private static Fput fp =  null;
+  private static Fput fp_interval =  null;
+  private static Fput fp_total    =  null;
 
   static DateFormat printdf = new SimpleDateFormat("MMddyyyy-HH:mm:ss.000" );
 
@@ -51,16 +34,25 @@ class Tnfe_data
   /**
    * Create Swat file and store fixed configuration data
    */
-  private static void openSwatFile(Date ts)
+  private static void openSwatFiles(Date ts)
   {
-    fp = new Fput(Vdbmain.output_dir, "swat_mon.txt");
+    fp_interval = new Fput(Vdbmain.output_dir, "swat_mon.txt");
+    fp_total    = new Fput(Vdbmain.output_dir, "swat_mon_total.txt");
 
-    fp.println(":date " + printdf.format(ts));
-    fp.println(":fixed_data");
+    fp_interval.println(":date " + printdf.format(ts));
+    fp_interval.println(":fixed_data");
+    fp_total.println(":date " + printdf.format(ts));
+    fp_total.println(":fixed_data");
+
+    /* Report only REAL SDs: */
     for (int i = 0; i < Vdbmain.sd_list.size(); i++)
     {
       SD_entry sd = (SD_entry) Vdbmain.sd_list.elementAt(i);
-      fp.println(i + " " + i + " 0 0 " + "sd_" + sd.sd_name);
+      if (!sd.concatenated_sd)
+      {
+        fp_interval.println(i + " " + i + " 0 0 " + "sd_" + sd.sd_name);
+        fp_total.println(i + " " + i + " 0 0 " + "sd_" + sd.sd_name);
+      }
     }
   }
 
@@ -68,15 +60,17 @@ class Tnfe_data
   /**
    * Write header to start a new interval
    */
-  public static void writeIntervalHeader(Date begin_ts, Date end_ts)
+  public static void writeIntervalHeader(boolean total, Date begin_ts, Date end_ts)
   {
     /* If file not open yet, do so: */
-    if (fp == null)
-      openSwatFile(begin_ts);
+    if (fp_interval == null)
+      openSwatFiles(begin_ts);
+
+    Fput fp = (total) ? fp_total : fp_interval;
 
     /* Write performance data for this interval: */
     fp.println(":");
-    fp.println(":vdbench_data");
+    fp.println(":vdbench503_vdbench_data_for_swat303");
     fp.println(":date " + printdf.format(begin_ts) + " " + printdf.format(end_ts));
   }
 
@@ -84,22 +78,27 @@ class Tnfe_data
   /**
    * Write data for one SD
    */
-  public static void writeOneSd(String sdname, SdStats stats)
+  public static void writeOneSd(boolean total, String sdname, SdStats stats)
   {
     /* Find relative position in the SD list: */
     int index = Vdbmain.sd_list.indexOf(SD_entry.findSD(sdname));
+
+    long max  = Math.max(stats.r_max, stats.w_max);
+    long resp = stats.r_resptime + stats.w_resptime;
+
+    Fput fp = (total) ? fp_total : fp_interval;
 
     fp.println(index +                         //  0  index
                " " + "0" +                     //  1  this_second
                " " + stats.reads +             //  2  kio.reads
                " " + stats.writes +            //  3  kio.writes
-               " " + stats.resptime / 1000 +   //  4  kio.rlentime
+               " " + resp        +             //  4  kio.rlentime
                " " + "0" +                     //  5  kio.rtime
-               " " + stats.rbytes / 512 +      //  6  kio.nread
-               " " + stats.wbytes / 512 +      //  7  kio.nwritten
-               " " + stats.respmax / 1000 +    //  8  kio.resp_max
-               " " + "0" +                     //  9  kio.resp_max_r
-               " " + "0" +                     // 10  kio.resp_max_w
+               " " + stats.r_bytes / 512 +     //  6  kio.nread
+               " " + stats.w_bytes / 512 +     //  7  kio.nwritten
+               " " +         max        +      //  8  kio.resp_max
+               " " + stats.r_max        +      //  9  kio.resp_max_r
+               " " + stats.w_max        +      // 10  kio.resp_max_w
                " " + "0" +                     // 11  kio.q_max
                " " + "0" +                     // 12  kio.q_max_r
                " " + "0");                     // 13  kio.q_max_w
@@ -108,11 +107,23 @@ class Tnfe_data
 
   public static void close()
   {
-    if (fp != null)
+    if (fp_interval != null)
     {
-      fp.close();
-      fp = null;
+      fp_interval.close();
+      fp_total.close();
+      fp_interval = null;
+      fp_total = null;
     }
+  }
+
+  public static void flush()
+  {
+    /* Removed to avoid reporting delays. */
+    //if (fp_interval != null)
+    //{
+    //  fp_interval.flush();
+    //  fp_total.flush();
+    //}
   }
 }
 

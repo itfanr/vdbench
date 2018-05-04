@@ -1,26 +1,8 @@
 package Utils;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -32,8 +14,8 @@ import java.lang.*;
 
 public class Getopt
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved.";
 
   private Vector  parm_data   = new Vector(32, 0);
   private Vector  positionals = new Vector(8, 0);
@@ -45,9 +27,6 @@ public class Getopt
 
   public Getopt(String[] args, String parse_list, int positionals_allowed)
   {
-    /* Obfuscation of '-expired' */
-    String tmpe = "pir"; tmpe = "-" + "ex" + tmpe + "ed";
-
     /* Don't fiddle with 'debug on' when piping data, e.g. Atobin() */
     boolean debug = false;
     if (debug) common.ptod("new getopt()\n");
@@ -85,15 +64,8 @@ public class Getopt
         }
       }
 
-      /* Separate treatment for '-expired': */
-      if (args[i].equalsIgnoreCase(tmpe))
-        common.set_debug(common.TMP_TEST255);
-      else
-      {
-        new_args.addElement(args[i]);
-        if (debug) common.ptod("newargs args[i]: " + args[i]);
-      }
-
+      new_args.addElement(args[i]);
+      if (debug) common.ptod("newargs args[i]: " + args[i]);
     }
 
 
@@ -226,7 +198,7 @@ public class Getopt
 
   }
 
-  public Vector get_positionals()
+  public Vector <String> get_positionals()
   {
     return positionals;
   }
@@ -322,6 +294,10 @@ public class Getopt
     return 0;
   }
 
+  public int get_int()
+  {
+    return (int) get_long();
+  }
   public long get_long()
   {
     //System.err.println("last_index: " + last_index);
@@ -372,6 +348,47 @@ public class Getopt
     return 0;
   }
 
+
+  /**
+   * Method to accept information like 128k, 110g, etc
+   * getopt.check('x') has to be called first
+   */
+  public  long extractLong()
+  {
+    String arg = get_string();
+    try
+    {
+      long value;
+      if (arg.endsWith("k"))
+        value = Long.parseLong(arg.substring(0, arg.length() - 1)) * 1024l;
+      else if (arg.endsWith("m"))
+        value = Long.parseLong(arg.substring(0, arg.length() - 1)) * 1024 * 1024l;
+      else if (arg.endsWith("g"))
+        value = Long.parseLong(arg.substring(0, arg.length() - 1)) * 1024 * 1024 * 1024l;
+      else if (arg.endsWith("t"))
+        value = Long.parseLong(arg.substring(0, arg.length() - 1)) * 1024 * 1024 * 1024* 1024l;
+      else if (arg.endsWith("p"))
+        value = Long.parseLong(arg.substring(0, arg.length() - 1)) * 1024 * 1024 * 1024 * 1024* 1024l;
+      else
+        value = Long.parseLong(arg);
+
+      return value;
+    }
+    catch (Exception e)
+    {
+      Vdb.common.ptod("Unable to extract numeric value from '%s'", arg);
+      common.failure(e);
+      return 0;
+    }
+  }
+
+  public int extractInt()
+  {
+    long value = extractLong();
+    if (value > Integer.MAX_VALUE)
+      common.failure("Expecting integer value, receiving something larger: " + value);
+    return(int) value;
+  }
 
 
   public static void main(String[] args)

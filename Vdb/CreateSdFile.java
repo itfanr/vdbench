@@ -1,32 +1,18 @@
 package Vdb;
-import java.util.HashMap;
-import java.util.Vector;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Vector;
+
+
 
 
 /**
@@ -34,9 +20,8 @@ import java.util.Vector;
  */
 public class CreateSdFile
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
-
+  private final static String c =
+  "Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.";
 
   /**
    * Insert an extra format run if needed.
@@ -46,8 +31,10 @@ public class CreateSdFile
    */
   public static boolean insertFormatsIfNeeded()
   {
+    int msg_count = 0;
+
     /* List of each SD that needs a file created with a WG_entry that uses it: */
-    HashMap sd_map = new HashMap(32);
+    HashMap <String, WG_entry> sds_to_format = new HashMap(32);
 
     /* Scan through all RDs: */
     for (int i = 0; i < Vdbmain.rd_list.size(); i++)
@@ -55,39 +42,67 @@ public class CreateSdFile
       RD_entry rd = (RD_entry) Vdbmain.rd_list.elementAt(i);
 
       /* Look for those WG_entry instances that use a non-existing file: */
-      for (int j = 0; j < rd.wgs_for_rd.size(); j++)
+      for (WG_entry wg : rd.wgs_for_rd)
       {
-        WG_entry wg = (WG_entry) rd.wgs_for_rd.elementAt(j);
         SD_entry sd = wg.sd_used;
 
-        if (sd.sd_is_referenced)
+        /* Create a loop here, for either one SD or a concateneated SD  */
+        /* so that we can look also at concatenated SDs                 */
+        /* We WON'T however do file creations; we just check and abort. */
+        ArrayList <SD_entry> sds = new ArrayList(1);
+        if (sd.concatenated_sd)
+          sds = sd.sds_in_concatenation;
+        else
+          sds.add(sd);
+
+        for (int c = 0; c < sds.size(); c++)
         {
-          if (sd.lun.startsWith("/dev/"))
-            continue;
-          if (sd.lun.startsWith("\\\\"))
-            continue;
-          if (sd.isTapeTesting())
-            continue;
+          sd = sds.get(c);
 
-          for (int k = 0; k < sd.host_info.size(); k++)
+          // why the heck this 'if'? If it is in a WG, it is referenced!!!!
+          if (sd.sd_is_referenced)
           {
-            LunInfoFromHost info = (LunInfoFromHost) sd.host_info.elementAt(k);
-            if (!info.lun_exists && sd.end_lba == 0)
+            if (!MiscParms.format_sds && sd.lun.startsWith("/dev/"))
+              continue;
+            if (!MiscParms.format_sds && sd.lun.startsWith("\\\\"))
               continue;
 
-            if (info.lun_exists && sd.psize >= sd.end_lba)
-              continue;
-
-            /* We now have a file that either does not exist or that */
-            /* is too small. Add it to the list if not there yet:    */
-            if (sd_map.put(sd.sd_name, wg) == null)
+            for (int k = 0; k < sd.host_info.size(); k++)
             {
-              common.ptod("lun=" + sd.lun + " does not exist or is too small. host=" +
-                          wg.slave.getHost().getLabel());
-              common.ptod("Vdbench will attempt to expand a disk file if the requested " +
-                          "file size is a multiple of 1mb");
-            }
+              LunInfoFromHost info = (LunInfoFromHost) sd.host_info.elementAt(k);
 
+              /* If the lun does not exist and we have no size there's nothing we can do: */
+              if (!info.lun_exists && sd.end_lba == 0)
+                continue;
+
+              /* If this is a soft link to a raw disk, leave things alone: */
+              if (info.soft_link != null && info.soft_link.startsWith("/dev/"))
+                continue;
+
+              /* If the lun exists, and the size is large enough, don't bother, */
+              /* unless we're specifically told to format it:                   */
+              if (!MiscParms.format_sds && info.lun_exists && sd.psize >= sd.end_lba)
+                continue;
+
+              /* We now have a file that either does not exist or that */
+              /* is too small. Add it to the list if not there yet:    */
+              if (sds_to_format.put(sd.sd_name, wg) == null)
+              {
+                if (!MiscParms.format_sds)
+                {
+                  if (msg_count++ == 0)
+                    common.ptod("Vdbench will attempt to expand a disk file if the requested " +
+                                "file size is a multiple of 1mb");
+                  common.ptod("lun=" + sd.lun + " does not exist or is too small. host=" +
+                              wg.getSlave().getHost().getLabel());
+
+                  if (Validate.sdConcatenation())
+                    common.failure("File creation or expansion not supported for SD concatenation");
+                }
+                else
+                  common.ptod("'formatsds=yes' is causing %s to be (re)formatted.", sd.lun);
+              }
+            }
           }
         }
       }
@@ -98,7 +113,7 @@ public class CreateSdFile
     /* The reason why I am chosing to do it this way is that at this      */
     /* point it has already been decided which file belongs on which host */
     /* and I did not want to fiddle with this again.                      */
-    Vector wgs = new Vector(sd_map.values());
+    Vector <WG_entry> wgs = new Vector(sds_to_format.values());
     if (wgs.size() == 0)
       return false;
 
@@ -107,51 +122,67 @@ public class CreateSdFile
     for (int i = 0; i < wgs.size(); i++)
       min_size = Math.min(min_size, ((WG_entry) wgs.elementAt(i)).sd_used.end_lba);
 
-    /* xfersize is set to 64k to prevent any DV run that also does formatting */
-    /* to use max_xfersize=1m for its native buffer allocation:               */
-    int xfersize = 64*1024;
-    if (min_size < 64*1024)
+    /* xfersize is set to 128k to prevent any DV run that also does formatting */
+    /* to use max_xfersize=1m for its native buffer allocation:                */
+    int xfersize = 128*1024;
+    if (min_size < 128*1024)
+    {
+      common.ptod("The creation of a very small file causes xfersize=512 to be set");
       xfersize = 512;
+    }
 
     /* However, it may be overridden: */
     if (MiscParms.formatxfersize > 0)
+    {
       xfersize = MiscParms.formatxfersize;
+
+      /* There is a bug in IO_task when determining the buffer size to use. */
+      /* An inserted format gets confuses with 'this is replay'.            */
+      /* Not worth the effort!                                              */
+      if (ReplayInfo.isReplay())
+        common.failure("Use of the formatxfersize= parameter not allowed during replay");
+    }
 
     /* Add an extra run at the beginning: */
     RD_entry rd   = new RD_entry();
-    rd.rd_name    = SD_entry.NEW_FILE_FORMAT_NAME;
-    rd.iorate_req = Vdbmain.IOS_PER_JVM; // Keep within one JVM
+    rd.rd_name    = SD_entry.SD_FORMAT_NAME;
+    rd.end_cmd    = rd.dflt.end_cmd;
+    rd.start_cmd  = rd.dflt.start_cmd;
+    rd.iorate_req = RD_entry.MAX_RATE;
     rd.setNoElapsed();
     rd.setInterval(1);
     rd.wd_names   = new String [ wgs.size() ];
     Vdbmain.rd_list.insertElementAt(rd, 0);
 
     /* Create overrides for those things I can't do directly in WD or RD */
-    double[] threads = new double[] { 2 };
-    double[] rate    = new double[] { Vdbmain.IOS_PER_JVM };
+    double[] threads = new double[] { 2};
+    double[] rate    = new double[] { RD_entry.MAX_RATE /* Vdbmain.IOS_PER_JVM */};
     new For_loop("forthreads",  threads, rd.for_list);
     new For_loop("foriorate",   rate,    rd.for_list);
     Vector next_do_list = new Vector(1, 0);
     For_loop.for_get(0, rd, next_do_list);
     rd.current_override = (For_loop) next_do_list.firstElement();
 
-
+    /* Create a WD_entry for each file that must be created/expanded: */
     for (int i = 0; i < wgs.size(); i++)
     {
-      WG_entry wg  = (WG_entry) wgs.elementAt(i);
+      WG_entry wg      = (WG_entry) wgs.elementAt(i);
 
-      /* Create a new WD entry: */
       WD_entry wd      = new WD_entry();
-      wd.wd_name       = SD_entry.NEW_FILE_FORMAT_NAME + wg.sd_used.sd_name;
-      wd.sd_names      = new String [] { wg.sd_used.sd_name};
+      wd.wd_name       = SD_entry.SD_FORMAT_NAME + "_" + wg.sd_used.sd_name;
+      wd.sd_names      = new String [] { wg.sd_used.sd_name };
       wd.wd_sd_name    = wg.sd_used.sd_name;
       wd.skew_original = 0;
       wd.seekpct       = -1;
       wd.readpct       = 0;
-      wd.host_names    = new String[] { wg.slave.getHost().getLabel()};
-      wd.xfersize      = xfersize;
+      //wd.host_names    = new String[] { wg.getSlave().getHost().getLabel()};
+      wd.host_names    = new String[] { "*" };
+      wd.xf_table      = new double[] { xfersize};
+      wg.sd_used.trackSdXfersizes(wd.xf_table);
 
       rd.wd_names[i]   = wd.wd_name;
+
+      WD_entry.max_wd_name = Math.max(WD_entry.max_wd_name, wd.wd_name.length());
 
       Vdbmain.wd_list.insertElementAt(wd, 0);
     }

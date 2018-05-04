@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -30,8 +12,8 @@ import java.io.*;
 
 class OpMove extends FwgThread
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   public OpMove(Task_num tn, FwgEntry fwg)
   {
@@ -63,10 +45,10 @@ class OpMove extends FwgThread
       output_fe = fwg.target_anchor.getRelativeFile(input_fe.getFileNoInList());
 
       /* If target file is busy, try an other one: */
-      if (!output_fe.setBusy(true))
+      if (!output_fe.setFileBusyExc())
       {
         block(Blocked.FILE_BUSY);
-        input_fe.setBusy(false);
+        input_fe.setUnBusy();
         continue;
       }
       break;
@@ -100,7 +82,8 @@ class OpMove extends FwgThread
 
       /* Get the list of keys for the output file: */
       if (Validate.isValidate())
-        output_afe.getKeyMap().getKeysFromMap(output_afe.next_lba, output_afe.xfersize);
+        output_afe.getKeyMap().storeDataBlockInfo(output_afe.next_lba,
+                                                  output_afe.xfersize, output_afe.getAnchor().getDVMap());
 
       /* Now go write the same blocked: */ // STILL NEED KEYS
       // the data will not really be copied with DV, a new block with the old keys
@@ -120,7 +103,7 @@ class OpMove extends FwgThread
     input_afe  = input_afe.closeFile(true);
     output_afe = output_afe.closeFile();
 
-    fwg.blocked.count(Blocked.FILE_CREATES);
+    //fwg.blocked.count(Blocked.FILE_CREATES);
     FwdStats.count(operation, tod);
     fwg.blocked.count(Blocked.FILES_MOVED);
 

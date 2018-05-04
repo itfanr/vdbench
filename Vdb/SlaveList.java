@@ -1,36 +1,18 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
 
-import java.util.*;
 import java.io.*;
 import java.text.*;
-import Utils.ClassPath;
-import Utils.Format;
+import java.util.*;
+
+import Utils.*;
 
 /**
  * This class contains code that keeps track of what slaves we have
@@ -38,18 +20,25 @@ import Utils.Format;
  */
 public class SlaveList
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
-
-  private static Vector slave_list = new Vector(64, 0);
-
+  private static Vector <Slave> slave_list = new Vector(64, 0);
+  public  static boolean        shutdown_requested = false;
+  private static int            max_label_length   = 0;
+  private static String         label_mask         = "%s";
 
   public static void addSlave(Slave slave)
   {
     slave_list.add(slave);
+    max_label_length = Math.max(max_label_length, slave.getLabel().length());
+    label_mask = "%-" + max_label_length + "s";
   }
 
+  public static String getLabelMask()
+  {
+    return label_mask;
+  }
 
   /**
    * Find the Slave instance for this specific slave
@@ -64,7 +53,7 @@ public class SlaveList
     }
     return null;
   }
-  public static Slave findSlave(String n)
+  public static Slave findSlaveLabel(String n)
   {
     for (int i = 0; i < slave_list.size(); i++)
     {
@@ -80,7 +69,7 @@ public class SlaveList
   {
     return slave_list.size();
   }
-  public static Vector getSlaveList()
+  public static Vector <Slave> getSlaveList()
   {
     return slave_list;
   }
@@ -94,7 +83,7 @@ public class SlaveList
       names.put(slave.getLabel(), slave);
     }
 
-    return (String[]) names.keySet().toArray(new String[0]);
+    return(String[]) names.keySet().toArray(new String[0]);
   }
 
 
@@ -122,6 +111,9 @@ public class SlaveList
    */
   public static void shutdownAllSlaves()
   {
+    Status.printStatus("Shutting down slaves", null);
+    shutdown_requested = true;
+
     /* Tell slaves to shut down cleanly: */
     for (int i = 0; i < slave_list.size(); i++)
     {
@@ -131,10 +123,13 @@ public class SlaveList
 
       /* Remember we did this so that we can accept a socket failure: */
       slave.set_may_terminate();
-      ss.setShutdown(true);
+      if (ss != null)
+      {
+        ss.setShutdown(true);
 
-      SocketMessage sm = new SocketMessage(SocketMessage.CLEAN_SHUTDOWN_SLAVE);
-      ss.putMessage(sm);
+        SocketMessage sm = new SocketMessage(SocketMessage.CLEAN_SHUTDOWN_SLAVE);
+        ss.putMessage(sm);
+      }
 
       //slave.setSocket(null);
     }
@@ -169,15 +164,26 @@ public class SlaveList
    */
   public static boolean allSequentialDone()
   {
-    /* Tell slaves to shut down cleanly: */
-    for (int i = 0; i < slave_list.size(); i++)
+    /* If there are no sequential workloads whatsoever, then return FALSE. */
+    boolean any_sequentials = false;
+    for (Slave slave : slave_list)
     {
-      Slave slave = (Slave) slave_list.elementAt(i);
-      //common.ptod("slave: " + slave.getLabel() + " " + slave.isSequentialDone());
-      if (!slave.isSequentialDone())
+      if (slave.sequentialFilesOnSlave() > 0)
+        any_sequentials = true;
+    }
+
+    if (!any_sequentials)
+      return false;
+
+
+    /* If any of the slaves that have sequential works is not done yet, return FALSE: */
+    for (Slave slave : slave_list)
+    {
+      if (slave.sequentialFilesOnSlave() > 0 && !slave.isSequentialDone())
         return false;
     }
 
+    /* Yes, we have sequentials and we're all done: */
     return true;
   }
 
@@ -297,7 +303,8 @@ public class SlaveList
 
   public static void waitForAllSlavesShutdown()
   {
-    Signal signal = new Signal(5);
+    Signal too_long_signal = new Signal(300);
+    Signal message_signal  = new Signal(5);
 
     while (true)
     {
@@ -309,8 +316,12 @@ public class SlaveList
         {
           waiting = true;
           common.sleep_some(100);
-          if (signal.go())
+          if (message_signal.go())
             common.ptod("Waiting for slave shutdown: " + slave.getLabel());
+
+          if (too_long_signal.go())
+            common.failure("Waited %d seconds for all slaves to shut down. Giving up.",
+                           too_long_signal.getDuration());
         }
       }
 
@@ -326,26 +337,23 @@ public class SlaveList
    */
   public static void startSlaves()
   {
-    // I bet that multi jvm will work for WD workloads also,
-    // but it needs to be tested
-    if (Validate.isValidate() && Vdbmain.isWdWorkload())
+    String[] slave_names = getSlaveNames();
+    Arrays.sort(slave_names);
+    for (String name : slave_names)
     {
-      if (Host.getDefinedHosts().size() > 1 ||
-          !((Slave) slave_list.firstElement()).isLocalHost() ||
-          slave_list.size() > 1)
-        common.failure("Data Validation may only run on the local host "+
-                       "with only a single JVM");
-    }
-
-
-    for (int i = 0; i < slave_list.size(); i++)
-    {
-      Slave slave     = (Slave) slave_list.elementAt(i);
+      Slave slave     = findSlaveLabel(name);
       SlaveStarter ss = new SlaveStarter();
       slave.setSlaveStarter(ss);
       ss.setSlave(slave);
       ss.start();
+
+      /* Just a little sleepy time to allow the slaves to get started */
+      /* in sequence, even though they really run async:              */
+      /* This is for reporting and debugging only.                    */
+      common.sleep_some(20);
     }
+
+    Status.printStatus("Starting slaves", null);
   }
 
 
@@ -359,7 +367,7 @@ public class SlaveList
     {
       Slave slave = (Slave) slave_list.elementAt(i);
       SlaveStarter ss = slave.getSlaveStarter();
-      ss.interrupt();
+      common.interruptThread(ss);
     }
   }
 
@@ -419,14 +427,14 @@ public class SlaveList
     {
       work = new Work();
       slave.setCurrentWork(work);
-      work.validate_options   = Validate.getOptions();
       work.fwd_rate           = rd.fwd_rate;
-      work.pattern_dir        = DV_map.pattern_dir;
       work.format_run         = rd.isThisFormatRun();
       work.format_flags       = rd.format;
       work.force_fsd_cleanup  = Vdbmain.force_fsd_cleanup;
       work.maximum_xfersize   = FileAnchor.getLargestXfersize();
-      Validate.setCompression(-1);
+      work.validate_options   = Validate.getOptions();
+      work.pattern_options    = Patterns.getOptions();
+      Validate.setCompressionRatio(rd.compression_ratio_to_use);
       work.distribution       = rd.distribution;
       work.fwgs_for_slave     = new Vector(8, 0);
       work.rd_start_command   = rd.start_cmd;
@@ -434,7 +442,14 @@ public class SlaveList
       work.work_rd_name       = rd.rd_name + " " + rd.current_override.getText();
       work.rd_mount           = rd.rd_mount;
       work.bucket_types       = BucketRanges.getBucketTypes();
+      work.miscellaneous      = MiscParms.getMiscellaneous();
+      //if (work.miscellaneous.size() == 0)
+      //  common.failure("debugging");
     }
+
+    String slave_mask = "slv=%-" + Slave.max_slave_name  + "s ";
+    String fwd_mask   = "fwd=%-" + FwdEntry.max_fwd_name + "s ";
+    String fsd_mask   = "fsd=%-" + FsdEntry.max_fsd_name + "s ";
 
     for (int i = 0; i < fwgs.size(); i++)
     {
@@ -445,11 +460,25 @@ public class SlaveList
       {
         work.fwgs_for_slave.add(fwg);
 
-        if (run)
-          common.plog(Format.f("Sending to %-12s ",  slave.getLabel()) +
-                      work.work_rd_name +
-                      " anchor=" + fwg.anchor.getAnchorName());
+        if (run) //  && common.get_debug(common.DETAIL_SLV_REPORT))
+          common.plog(slave_mask + fwd_mask + fsd_mask +
+                      "anchor=%s threads=%2d skew=%5.2f operation=%s ",
+                      slave.getLabel(),
+                      fwg.fwd_used.fwd_name,
+                      fwg.fsd_name,
+                      fwg.anchor.getAnchorName(),
+                      fwg.threads, fwg.skew,
+                      Operations.getOperationText(fwg.getOperation()));
       }
+    }
+
+    /* Set a flag that allows an old control file to be preserved: */
+    if (work != null)
+    {
+      if (work.format_run)
+        work.keep_controlfile = false;
+      else
+        work.keep_controlfile = Operations.keepControlFile(work.fwgs_for_slave);
     }
 
 
@@ -508,6 +537,10 @@ public class SlaveList
 
   public static void sendWorkToSlaves(RD_entry rd)
   {
+    WhereWhatWork.checkWorkForSlave0(rd);
+    WhereWhatWork.paranoiaDvCheck();
+    WhereWhatWork.rememberWhereDvWent();
+
     int count = 0;
 
     /* Send to the slave: */
@@ -519,10 +552,19 @@ public class SlaveList
       if (slave.getCurrentWork() == null)
         continue;
 
+      // Note:if there are inactive slaves we have a real problem with slave_count below!
+
       /* Slave needs yo know about the others: */
       Work work         = slave.getCurrentWork();
       work.slave_count  = slave_list.size();
       work.slave_number = slave.getSlaveNumber();
+
+      /* We are (possibly) sending out concatenated SDs here. */
+      /* If we send the IDENTICAL SD out, then we send out the CURRENT lun name */
+      /* to each host. ConcatMarkers() may have changed the lun name however. */
+      /* We therefore must set the proper lun name just before the SD_entry */
+      /* is serialized */
+      /* .... */
 
       SocketMessage sm = new SocketMessage(SocketMessage.WORK_TO_SLAVE, work);
       slave.setWorkDone(false);
@@ -537,31 +579,25 @@ public class SlaveList
   }
 
 
-  public static void printWorkForSlaves(RD_entry rd)
+  public static int countSlavesWithWork(RD_entry rd)
   {
-    if (Vdbmain.isWdWorkload())
+    int count = 0;
+
+    /* Send to the slave: */
+    for (int i = 0; i < slave_list.size(); i++)
     {
-      common.plog("SlaveList.printWorkForSlaves() " +
-                  (RD_entry.next_rd.use_waiter ? "" : "*"));
+      Slave slave = (Slave) slave_list.elementAt(i);
 
-      for (int i = 0; i < slave_list.size(); i++)
-      {
-        Slave slave = (Slave) slave_list.elementAt(i);
+      /* If there is no work now for this slave, no message: */
+      if (slave.getCurrentWork() == null)
+        continue;
 
-        if (slave.getCurrentWork() != null)
-        {
-          Work work = slave.getCurrentWork();
-          for (int k = 0; k < work.wgs_for_slave.size(); k++)
-          {
-            //common.ptod("slave: " + slave.getLabel());
-            common.plog(((WG_entry) work.wgs_for_slave.elementAt(k)).report(rd));
-          }
-        }
-      }
-      common.plog("");
-
+      count ++;
     }
+
+    return count;
   }
+
 
 
 
@@ -572,7 +608,7 @@ public class SlaveList
   public static void waitForSlavesReadyToGo()
   {
     int  sleepy_time = (common.get_debug(common.FAST_SYNCTIME)) ? 1 : 30;
-    Signal signal = new Signal(sleepy_time);
+    Signal signal    = new Signal(sleepy_time);
 
     while (true)
     {
@@ -599,6 +635,9 @@ public class SlaveList
     }
   }
 
+  /**
+   * All slaves are synched, or is that psyched?
+   */
   public static void tellSlavesToGo()
   {
     for (int i = 0; i < slave_list.size(); i++)
@@ -609,49 +648,42 @@ public class SlaveList
     }
   }
 
-
   /**
-   * Decide whether we can bypass starting a jVM and run only locally.
-   *
-   * Note: doing this means that the vdbench script must have enough memory
-   * to run a huge workload!
-   * And I therefore maybe should not do it once going live!
-   *
-   * Then of course, we can run the startup script with as little memory
-   * as possible, and enter real heap requirements in the parmfile.
-   * I'll likely opt to always have the script specify the heap sizes.
-   * User just must have enough virtual memory/swap space
-   *
-   * Of course, we can have two separate scripts:
-   * - one for starting of Vdbench and the Gui
-   * - one for SlaveJvm.
-   * This means I would have to change the install process to cover having
-   * two scripts.
-   *
-   * I have just one script, but the script reacts to the first argument
-   * being 'SlaveJvm'.
-   *
-   * Until final decision is made, never inside of master.
+   * An extra option, allowing artificial synching of concurrent independent
+   * Vdbench executions.
    */
-  public static boolean runSlaveInsideMaster()
+  public static void externalSynchronize()
   {
+    String SYNC_BASE = "external_synch.";
+    String SYNC_NAME = "external_synch.txt";
 
-    if (common.get_debug(common.LOCAL_JVM))
-      return true;
 
-    // if (common.get_debug(common.NO_LOCAL_JVM))
-    //   return false;
-    //
-    // if (getSlaveCount() > 1)
-    //   return false;
-    //
-    // /* A single local slave can start locally: */
-    // if (((Slave) SlaveList.getSlaveList().firstElement()).isLocalHost())
-    //   return true;
-    //
-    // return false;
-    return false;
+    if (common.get_debug(common.EXTERNAL_SYNCH))
+    {
+      /* Create my own sync file: */
+      Fput fp = new Fput(SYNC_BASE + Native.getSolarisPids());
+      fp.close();
 
+      /* I now just wait for 'n' files to exist: */
+      common.pboth("Waiting for external synchronization.");
+
+
+      Signal signal = new Signal(15*60);
+      while (true)
+      {
+        if (signal.go())
+          common.failure("Someone left Vdbench out to dry when using the " +
+                         "'EXTERNAL_SYNCH' option, which has a timeout of %d seconds",
+                         signal.getDuration());
+
+        if (new File(SYNC_NAME).exists())
+        {
+          common.pboth("External synchronization complete.");
+          break;
+        }
+        common.sleep_some(100);
+      }
+    }
   }
 }
 

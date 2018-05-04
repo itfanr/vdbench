@@ -1,26 +1,8 @@
 package Utils;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -117,10 +99,10 @@ Just must switch between long and byte arrays.
 
 */
 
-public class Bin extends Vdb.VdbObject
+public class Bin
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.";
 
   private int        array_offset = 0;
   private int        bytes_left   = 8; /* Bytes left in last long */
@@ -208,8 +190,8 @@ public class Bin extends Vdb.VdbObject
     open_bin_files.addElement(this);
 
     /* Prevent loop or leaving Bin files open: */
-    if (open_bin_files.size() > 2000)
-      common.failure("Too many (2000) Bin files currently open");
+    if (open_bin_files.size() > 15000)
+      Vdb.common.failure("Too many (%d) Bin files currently open", open_bin_files.size());
   }
 
 
@@ -476,6 +458,8 @@ public class Bin extends Vdb.VdbObject
       else if (asynczip == null && read_channel != null)
         read_channel.close();
 
+      if (asynczip != null)
+        asynczip.interrupt();
       asynczip = null;
 
     }
@@ -1171,7 +1155,7 @@ public class Bin extends Vdb.VdbObject
 
     /* Delete anything that includes '.jz': */
     String[] list = new File(parent).list();
-    for (int i = 0; i < list.length; i++)
+    for (int i = 0; list != null && i < list.length; i++)
     {
       //common.ptod("list[i]: " + list[i]);
       if (list[i].startsWith(child + ".jz"))

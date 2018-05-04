@@ -1,38 +1,17 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
 
-import java.net.*;
-import java.text.*;
-import java.text.Format.Field;
-import java.util.*;
+import java.text.Format;
 
 import Utils.CommandOutput;
-import Utils.Format;
+import Utils.Fget;
 import Utils.OS_cmd;
 
 
@@ -43,8 +22,8 @@ import Utils.OS_cmd;
  */
 class SlaveStarter extends ThreadControl
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private Slave slave;
   private boolean abort_pending = false;
@@ -76,7 +55,7 @@ class SlaveStarter extends ThreadControl
 
     this.removeIndependent();
 
-    common.plog("SlaveStarter terminating: " + slave.getLabel());
+    //common.plog("SlaveStarter terminating: " + slave.getLabel());
   }
 
 
@@ -92,7 +71,9 @@ class SlaveStarter extends ThreadControl
                            {
                              public boolean newLine(String line, String type, boolean more)
                              {
-                               String txt = Format.f("%-12s: ", slave.getLabel()) + line;
+                               //System.out.println("line: " + line);
+
+                               String txt = String.format("%-12s: ", slave.getLabel()) + line;
                                slave.getConsoleLog().println(common.tod() + " " + line);
 
                                if (!slave.isConnected() && txt.endsWith("Command not found"))
@@ -105,6 +86,9 @@ class SlaveStarter extends ThreadControl
                                if (common.get_debug(common.SLAVE_LOG_ON_CONSOLE) ||
                                    abort_pending)
                                  common.ptod(txt);
+
+                               //if (txt.indexOf("Debug_cmds():") != -1)
+                               //  common.ptod(txt);
 
                                return true;
                              }
@@ -143,9 +127,30 @@ class SlaveStarter extends ThreadControl
       /* Add the name/ip address of the master: */
       ocmd.addText("-m");
       if (host.getLabel().equals("localhost"))
-        ocmd.addText("localhost");
+      {
+        String ip = "localhost";
+
+        if (Fget.file_exists("override_ip.txt"))
+        {
+          ip = Fget.readFileToArray("override_ip.txt")[0];
+          common.ptod("Using file 'override_ip.txt': " + ip);
+        }
+        ocmd.addText(ip);
+      }
       else
-        ocmd.addText(common.getCurrentIP());
+      {
+        String ip = common.getCurrentIP();
+        if (ip.equals("127.0.0.1"))
+          common.failure("Current system IP address is '%s'. "+
+                         "Invalid network definition for multi-host processing.", ip);
+        if (Fget.file_exists("override_ip.txt"))
+        {
+          ip = Fget.readFileToArray("override_ip.txt")[0];
+          common.ptod("Using file 'override_ip.txt': " + ip);
+        }
+
+        ocmd.addText(ip);
+      }
 
       /* Add the name of this slave to serve socket recognition: */
       ocmd.addText("-n");
@@ -162,8 +167,13 @@ class SlaveStarter extends ThreadControl
       /* Add debugging flags: */
       ocmd.addText(common.get_debug_string());
 
+      //common.where();
+      //ocmd.addText(String.format(" | tee slave.%d.txt", common.getProcessId()));
+
       /* Start local or via separate JVM (see note at startJvm()) ? */
       startJvm(ocmd, host);
+      // do I need a bit to get latest stdout?
+      common.sleep_some(500);
 
       /* If we get completion before we expect it then we are in error */
       /* and the whole test fails.                                     */
@@ -211,37 +221,26 @@ class SlaveStarter extends ThreadControl
    */
   private void startJvm(OS_cmd ocmd, Host host)
   {
+    /* Start the slave. This thread ends up waiting for completion.  */
+    common.ptod("Starting slave: " + ocmd.getCmd());
+    if (slave.isLocalHost() && !common.get_debug(common.FAKE_RSH))
+      ocmd.execute(false);
 
-    /* A single local slave can start locally: */
-    /* (This is only for debugging, and may no longer work at all) */
-    if (SlaveList.runSlaveInsideMaster() && slave.isLocalHost())
+    else if (host.getShell().equals("vdbench") || common.get_debug(common.FAKE_RSH))
     {
-      /* Remove the first two parameters from the OS_cmd() command: */
-      StringTokenizer st = new StringTokenizer(ocmd.getCmd());
-      String[] args = new String[st.countTokens() - 2];
-      st.nextToken();
-      st.nextToken();
-      int i = 0;
-      while (st.hasMoreTokens())
-        args[i++] = st.nextToken();
+      if (common.get_debug(common.SLAVE_LOG_ON_CONSOLE))
+        common.failure("'-d44' option does not work with vdbench=rsh");
 
-      SlaveJvm.main(args);
+      /* We've got a problem here: any command sent to this socket will be */
+      /* blindly executed. Need to remove the './vdbench SlaveJVM' piece.  */
+      /* RSH at the other side will add it again.                          */
+      String cmd = ocmd.getCmd().substring(ocmd.getCmd().indexOf("SlaveJvm") + 8);
+      Rsh.issueCommand(slave, cmd);
     }
 
     else
-    {
-      /* Start the slave. This thread ends up waiting for completion.  */
-      common.ptod("Starting slave: " + ocmd.getCmd());
-      if (slave.isLocalHost())
-        ocmd.execute(false);
+      ocmd.execute(false);
 
-      else if (host.getShell().equals("vdbench"))
-        Rsh.issueCommand(slave, ocmd.getCmd());
-
-      else
-        ocmd.execute(false);
-
-      return;
-    }
+    return;
   }
 }

@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -44,10 +26,10 @@ import Utils.NfsV4;
  * to start doing the same for other data, e.g. CPU and SD data.
  * This will then replace the Data() class which I never really liked anyway.
  */
-public class ReportData extends VdbObject
+public class ReportData
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private Report   owner;
 
@@ -83,19 +65,28 @@ public class ReportData extends VdbObject
     Report[] reps = Report.getReports();
     for (int i = 0; i < reps.length; i++)
     {
-      reps[i].getData().interval_fwdstats = new FwdStats();
-      reps[i].getData().interval_fwdstats.setElapsed(interval_duration * 1000000);
+      if (Vdbmain.isFwdWorkload())
+      {
+        reps[i].getData().interval_fwdstats = new FwdStats();
+        reps[i].getData().interval_fwdstats.setElapsed(interval_duration * 1000000);
+      }
 
-      reps[i].getData().interval_sdstats = new SdStats();
-      reps[i].getData().interval_sdstats.elapsed = interval_duration * 1000000;
+      else
+      {
+        reps[i].getData().interval_sdstats = new SdStats();
+        reps[i].getData().interval_sdstats.elapsed = interval_duration * 1000000;
+      }
 
       reps[i].getData().interval_cpustats = new Kstat_cpu();
 
       reps[i].getData().interval_kstats   = new Kstat_data();
       reps[i].getData().interval_kstats.elapsed = interval_duration * 1000000;
 
-      reps[i].getData().interval_nfs3      = new NfsV3();
-      reps[i].getData().interval_nfs4      = new NfsV4();
+      if (NfsStats.areNfsReportsNeeded())
+      {
+        reps[i].getData().interval_nfs3 = new NfsV3();
+        reps[i].getData().interval_nfs4 = new NfsV4();
+      }
     }
   }
 
@@ -134,6 +125,13 @@ public class ReportData extends VdbObject
       return interval_nfs3;
     else
       return interval_nfs4;
+  }
+  public Object getTotalNfsStats(Object type)
+  {
+    if (type instanceof NfsV3)
+      return total_nfs3;
+    else
+      return total_nfs4;
   }
   public Kstat_cpu getIntervalCpuStats()
   {
@@ -182,12 +180,12 @@ public class ReportData extends VdbObject
   {
     interval_kstats.kstat_accum(stats, false);
 
-    if (interval_kstats.kstat_busy() < 0)
-      common.ptod("report1: %-20s busy: %6.2f %6d %6.2f",
-                  owner.getFileName(),
-                  interval_kstats.kstat_busy(),
-                  interval_kstats.devices,
-                  stats.kstat_busy());
+    //if (interval_kstats.kstat_busy() < 0)
+    //  common.ptod("report1: %-20s busy: %6.2f %6d %6.2f",
+    //              owner.getFileName(),
+    //              interval_kstats.kstat_busy(),
+    //              interval_kstats.devices,
+    //              stats.kstat_busy());
   }
 
   public void accumIntervalNfs(Object stats)
@@ -257,16 +255,18 @@ public class ReportData extends VdbObject
       ReportData rs = reports[i].getData();
       rs.total_kstats.kstat_accum(rs.interval_kstats, true);
 
-      if (rs.interval_kstats.kstat_busy() < 0)
-        common.ptod("reports: %-20s busy: %6.2f %6.2f",
-                    reports[i].getFileName(),
-                    rs.interval_kstats.kstat_busy(),
-                    rs.total_kstats.kstat_busy());
+      //if (rs.interval_kstats.kstat_busy() < 0)
+      //  common.ptod("reports: %-20s busy: %6.2f %6.2f",
+      //              reports[i].getFileName(),
+      //              rs.interval_kstats.kstat_busy(),
+      //              rs.total_kstats.kstat_busy());
     }
   }
 
   public static void addNfsIntervalToTotals()
   {
+    if (!NfsStats.areNfsReportsNeeded())
+      return;
     Report[] reports = Report.getReports();
     for (int i = 0; i < reports.length; i++)
     {
@@ -312,4 +312,5 @@ public class ReportData extends VdbObject
     }
   }
 }
+
 

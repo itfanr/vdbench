@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -28,6 +10,7 @@ package Vdb;
 
 import java.io.*;
 import java.util.*;
+
 import Utils.Format;
 
 /**
@@ -35,25 +18,29 @@ import Utils.Format;
  */
 public class Native
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private static long total_size = 0;
   private static long max_size = 0;
 
   static Object alloc_lock = new Object();
 
-  private static boolean print_each_io = common.get_debug(common.PRINT_EACH_IO);
-
   static
   {
     common.get_shared_lib();
   }
 
+
+  /**
+   * Solaris only: Native sleep.
+   */
+  public static native void nativeSleep(long wakeup);
+
   /**
    * Open a file name and return a file handle.
    */
-  private static native long openfile(String filename, int open_flags, int write_flag);
+  public  static native long openfile(String filename, int open_flags, int write_flag);
   public  static        long openFile(String filename, int write_flag)
   {
     return openFile(filename, null, write_flag);
@@ -68,17 +55,26 @@ public class Native
     boolean sol_directio  = false;
     boolean sol_directiof = false;
 
+    if (write_flag != 0 && common.get_debug(common.NEVER_OPEN_FOR_WRITE))
+      common.failure("'NEVER_OPEN_FOR_WRITE' is set. Trying to open " + filename);
+
+
     /* Prepare flags to be passed to open(): */
     if (open_flags != null)
     {
-      flags         = open_flags.getOpenFlags();
-      sol_directio  = open_flags.isOther(OpenFlags.SOL_DIRECTIO);
-      sol_directiof = open_flags.isOther(OpenFlags.SOL_DIRECTIO_OFF);
+      flags = open_flags.getOpenFlags();
+
+      /* directio only for files, not for raw volumes: */
+      if (!filename.startsWith("/dev/"))
+      {
+        sol_directio  = open_flags.isOther(OpenFlags.SOL_DIRECTIO);
+        sol_directiof = open_flags.isOther(OpenFlags.SOL_DIRECTIO_OFF);
+      }
     }
 
-    if (print_each_io) common.ptod("Native.openFile start: " + flags + " " + write_flag + " " + filename);
+    //common.ptod("Native.openFile start: %s %d write_flag: %d",    filename, flags, write_flag);
     long handle = openfile(filename, flags, write_flag);
-    if (print_each_io) common.ptod("Native.openFile end:   " + flags + " " + write_flag + " " + filename + " " + handle);
+    //common.ptod("Native.openFile end:   %s %d write_flag: %d %x", filename, flags, write_flag, handle);
 
     /* Optionally call Solaris directio() function: */
     if (sol_directio)
@@ -106,18 +102,18 @@ public class Native
   private static native long closefile(long fhandle);
   public  static long closeFile(long fhandle)
   {
+    if (fhandle <= 0)
+      common.failure("Bad file handle: %d", fhandle);
     return closeFile(fhandle, null);
   }
   public  static long closeFile(long fhandle, OpenFlags open_flags)
   {
-    int     flags        = 0;
     boolean fsync        = false;
     boolean sol_directio = false;
 
     /* Prepare flags to be passed to open(): */
-    if (open_flags != null)
+    if (open_flags != null && !File_handles.getFileName(fhandle).startsWith("/dev/"))
     {
-      flags        = open_flags.getOpenFlags();
       fsync        = open_flags.isOther(OpenFlags.FSYNC_ON_CLOSE);
       sol_directio = open_flags.isOther(OpenFlags.SOL_DIRECTIO);
     }
@@ -139,9 +135,7 @@ public class Native
         common.failure("Failed call to directio: " + Errno.xlate_errno(rc));
     }
 
-    if (print_each_io) common.ptod("Native.closeFile start: " + fhandle);
     long rc = closefile(fhandle);
-    if (print_each_io) common.ptod("Native.closeFile end:   " + fhandle + " " + rc);
 
     if (rc != 0)
       common.ptod("Native.closeFile(fhandle): close failed: %d", rc);
@@ -150,7 +144,7 @@ public class Native
   }
 
   /** Unix world: fsync before close **/
-  private static native long fsync(long fhandle);
+  public static native long fsync(long fhandle);
 
   /** Unix world: directio before open (and close?)  */
   private static native long directio(long fhandle, long on_flag);
@@ -159,13 +153,7 @@ public class Native
   private static native long getsize(long fhandle, String fname);
   public  static        long getSize(long fhandle, String fname)
   {
-    if (print_each_io)
-      common.ptod("Native.getSize start: " + fhandle + " " + fname);
-
     long rc = getsize(fhandle, fname);
-
-    if (print_each_io)
-      common.ptod("Native.getSize end:   " + fhandle + " " + fname + " " + rc);
 
     return rc;
   }
@@ -183,32 +171,23 @@ public class Native
    */
   public static native long get_simple_tod();  // usecs
 
-  private static native void multi_io(long[] cmd_fast, int burst);
-  public  static        void multiJniCalls(long[] cmd_fast, int burst)
-  {
-    if (print_each_io)
-      common.ptod("Native.multi_io start: " + cmd_fast[6] + " " +
-                  cmd_fast[0] + " " + cmd_fast[3] + " " + cmd_fast[4]);
-
-    multi_io(cmd_fast, burst);
-
-    if (print_each_io)
-      common.ptod("Native.multi_io end:   " + cmd_fast[6] + " " +
-                  cmd_fast[0] + " " + cmd_fast[3] + " " + cmd_fast[4]);
-  }
-
 
   /** Start and complete the requested read */
-  private static native long read(long fhandle, long seek, long length, long buffer);
-  public  static        long readFile(long fhandle, long seek, long length, long buffer)
+  private static native long read(     long fhandle, long seek, long length, long buffer, int wkl);
+  public  static        long readFile( long fhandle, long seek, long length, long buffer)
   {
-    if (print_each_io)
-      common.ptod("Native.readFile start: " + fhandle + " " + seek + " " + length);
+    if (fhandle <= 0)
+      common.failure("Bad file handle: %d", fhandle);
+    return readFile(fhandle, seek, length, buffer, -1);
+  }
 
-    long rc = read(fhandle, seek, length, buffer);
-
-    if (print_each_io)
-      common.ptod("Native.readFile end:   " + fhandle + " " + seek + " " + length + " " + rc);
+  private static long total_sleep = 0;
+  private static long sleeps = 0;
+  public  static        long readFile( long fhandle, long seek, long length, long buffer, int wkl)
+  {
+    if (fhandle <= 0)
+      common.failure("Bad file handle: %d", fhandle);
+    long rc = read(fhandle, seek, length, buffer, wkl);
 
     return rc;
   }
@@ -220,81 +199,107 @@ public class Native
    * Some day I want to change that so that I can return errors from JNI.
    *
    * However, IO_task.io_error_report() gets the correct errno already from JNI
-   * directly, but only for multi_io and file system i/o, not for single
-   * i/o.
+   * directly.
    */
-
-  private static native long write(long fhandle, long seek, long length, long buffer);
+  private static native long write(    long fhandle, long seek, long length, long buffer, int wkl);
   public  static        long writeFile(long fhandle, long seek, long length, long buffer)
   {
-    if (print_each_io)
-      common.ptod("Native.writeFile start: " + fhandle + " " + seek + " " + length);
-
-    long rc = write(fhandle, seek, length, buffer);
-
-    if (print_each_io)
-      common.ptod("Native.writeFile end:   " + fhandle + " " + seek + " " + length + " " + rc);
+    if (fhandle <= 0)
+      common.failure("Bad file handle: %d", fhandle);
+    return writeFile(fhandle, seek, length, buffer, -1);
+  }
+  public  static        long writeFile(long fhandle, long seek, long length, long buffer, int wkl)
+  {
+    if (fhandle <= 0)
+      common.failure("Bad file handle: %d", fhandle);
+    long rc = write(fhandle, seek, length, buffer, wkl);
 
     return rc;
   }
 
+  /**
+  * Blocks written this way will have each 4k of the buffer overlaid with the
+  * current TOD in microseconds, xor'ed with the lba.
+  * This then prevents the data from accidentally (or purposely) benefitting from
+  * possible undocumented Dedup.
+  */
+  private static native long noDedupWrite(   long fhandle, long seek, long length, long buffer, int jni_index);
+  public  static        long noDedupAndWrite(long fhandle, long seek, long length, long buffer, int jni_index)
+  {
+    return noDedupWrite(fhandle, seek, length, buffer, jni_index);
+  }
 
 
-
-  /** Store a Data pattern in C memory */
-  static native void store_pattern(int[] array, int key);
+  /** Store a Data pattern in C memory  */
+  static native void store_pattern(int[] array);
 
   /** Translate an 'int' array to a native buffer */
-  // we should have checks to make sure we are dealing with equal lengths!
-  static native void array_to_buffer(int[] array, long buffer);
+  private static native void array_to_buffer(int[] array, long buffer, int bytes);
+  public  static        void arrayToBuffer(  int[] array, long buffer, int bytes)
+  {
+    array_to_buffer(array, buffer, bytes);
+  }
+  public static         void arrayToBuffer(  int[] array, long buffer)
+  {
+    array_to_buffer(array, buffer, array.length * 4);
+  }
 
   /** Translate a native buffer to an 'int' array */
-  static native void buffer_to_array(int[] array,
-                                     long buffer,
-                                     long bufsize);
+  static native void buffer_to_array(int[] array, long buffer, int bytes);
+
+  /** Translate a native buffer to a 'long' array */
+  static native void longBufferToArray(long[] array, long buffer, int bytes);
+  static native void arrayToLongBuffer(long[] array, long buffer, int bytes);
 
 
   /** Allocate a native buffer */
-  private static native long allocbuf(long bufsize);
-  static long allocBuffer(long bufsize)
+  private static native long allocbuf(int bytes);
+  static long allocBuffer(int bytes)
   {
-    //common.ptod("allocbuffer: " + bufsize);
-    //common.where(8);
     synchronized(alloc_lock)
     {
-      total_size += bufsize;
-      max_size = Math.max(total_size, max_size);
 
-      long buffer =  Native.allocbuf(bufsize);
+      long buffer =  Native.allocbuf(bytes);
       if (buffer == 0)
       {
         printMemoryUsage();
         common.memory_usage();
-        common.failure("allocbuffer() failed");
+        common.failure("allocbuffer() failed. Asking for %d; already have %d allocated",
+                       bytes, total_size);
       }
+
+      total_size += bytes;
+      max_size = Math.max(total_size, max_size);
+
+      //common.ptod("allocBuffer: %,8d bytes from 0x%08x to 0x%08x",
+      //            bytes, buffer, buffer+bytes-1);
+
+      //common.ptod("allocBuffer: %,8d %,12d", bytes, total_size);
+      //common.where(8);
+
       return buffer;
     }
   }
 
 
   /** Free a native buffer */
-  private static native void freebuf(long bufsize, long buffer);
-  static void freeBuffer(long bufsize, long buffer)
+  private static native void freebuf(int bufsize, long buffer);
+  static void freeBuffer(int bufsize, long buffer)
   {
     synchronized(alloc_lock)
     {
       total_size -= bufsize;
       Native.freebuf(bufsize, buffer);
     }
+    //common.ptod("freeBuffer:  %,8d %,12d", bufsize, total_size);
+    //common.where(8);
   }
 
 
   public static void printMemoryUsage()
   {
-    common.plog("Maximum native memory allocation: " +
-                Format.f("%12d", max_size) +
-                "; Current allocation: " +
-                Format.f("%12d", total_size));
+    common.plog("Maximum native memory allocation: %,12d; Current allocation: %,12d",
+                max_size, total_size);
     Native.max_size = 0;
   }
 
@@ -321,123 +326,150 @@ public class Native
 
 
 
-  static native void setup_jni_context(int    xfersize,
-                                       double seekpct,
-                                       double readpct,
-                                       double rhpct,
-                                       double whpct,
-                                       long   hseek_low,
-                                       long   hseek_high,
-                                       long   hseek_width,
-                                       long   mseek_low,
-                                       long   mseek_high,
-                                       long   mseek_width,
-                                       long   fhandle,
-                                       int    threads_used,
-                                       int    workload_no,
-                                       String lun,
-                                       String sd);
+  static native void setup_jni_context(int    jni_index,
+                                       String sd,
+                                       long[] read_hist,
+                                       long[] write_hist);
 
 
-  static native void get_one_set_statistics(WG_stats stats,
-                                            int       workload_no,
-                                            boolean   workload_done);
+  static native String get_one_set_statistics(int    jni_index,
+                                              long[] read_hist,
+                                              long[] write_hist);
 
 
   /**
    * Allocate shared memory.
-   *
-   * The boolean and the String are definitely obsolete, were used for vdblite.
-   *
-   * Memory used to count WG statistics, though there is no longer a need
-   * for it to be --shared-- memory. As a matter of fact, we now just use maloc(),
-   * so no longer are using shared memory.
    */
-  static native void alloc_jni_shared_memory(boolean jni_in_control,
-                                             String shared_lib);
-
-  static native void free_jni_shared_memory();
-
-
-  /**
-   * Tape on windows requires explicit rewind and write tapemark.
-   */
-  static long windowsRewind(long handle, long wait)
+  static native void alloc_jni_shared_memory(long pid);
+  static        void allocSharedMemory()
   {
-    //common.where(8);
-    double start = System.currentTimeMillis();
-    long   rc    = windows_rewind(handle, wait);
-    double end   = System.currentTimeMillis();
+    /* Process id: (java 1.5+) */
+    String pid = common.getProcessIdString();
+    if (!common.isNumeric(pid))
+      common.failure("Invalid process id: '%s'", pid);
 
-    //common.ptod("Ending rewind: " + ((end - start / 1000.)));
-
-    return rc;
+    /* PID is only included when we know that everything will just stay within  */
+    /* the same Vdbench execution, including validate=continue.                 */
+    /* Maybe some day we'll have a list of 'old' pids included, unlikely though */
+    if (Validate.isJournaling() || Validate.isContinueOldMap())
+    {
+      alloc_jni_shared_memory(common.getProcessId());
+    }
+    else
+    {
+      /* Temporarily removed because the journaling flag is not set yet */
+      /* when this is called.                                           */
+      /* Though I COULD store it in the DV header, but not CHECK it?    */
+      /* THAT's what I decided!                                         */
+      alloc_jni_shared_memory(common.getProcessId());
+    }
   }
+
+
+
+
+  public static native long getSolarisPids();
 
   static native String getWindowsErrorText(int msgno);
 
-  static native long windows_rewind(long handle, long wait);
-  static native long windows_tapemark(long handle, long count, long wait);
-
-  /**
-   * These functions are created for Data Validation for File System tests.
-   * Normally it will be handled by multi_io, but for file system testing I
-   * don't think it is needed to use multi_io.
-   */
-  private static native long readAndValidate(long   handle,
-                                             long   logical_lba,
-                                             long   lba,
-                                             int    xfersize,
-                                             long   buffer,
-                                             int    key_count,
-                                             int[]  keys,
-                                             String name);
-  public static long readAndValidateBlock(long   handle,
-                                          long   logical_lba,
-                                          long   lba,
-                                          int    xfersize,
-                                          long   buffer,
-                                          int    key_count,
-                                          int[]  keys,
-                                          String name)
+  private static native long multiKeyReadAndValidate(long   handle,
+                                                     int    data_flag,
+                                                     long   file_start_lba,
+                                                     long   lba,
+                                                     int    xfersize,
+                                                     long   buffer,
+                                                     int    key_count,
+                                                     int[]  keys,
+                                                     long[] compressions,
+                                                     long[] dedup_sets,
+                                                     String name,
+                                                     int    wkl);
+  public static long multiKeyReadAndValidateBlock(long   handle,
+                                                  int    data_flag,
+                                                  long   file_start_lba,
+                                                  long   lba,
+                                                  int    xfersize,
+                                                  long   buffer,
+                                                  int    key_count,
+                                                  int[]  keys,
+                                                  long[] compressions,
+                                                  long[] dedup_sets,
+                                                  String name,
+                                                  int    wkl)
   {
     if (name.length() != 8)
-      common.failure("fillAndWriteBlock(): 'name' must be 8 characters long: >>>" + name + "<<<");
+      common.failure("Native.multiKeyReadAndValidate: 'name' must be 8 characters long: >>>" + name + "<<<");
 
-    if (print_each_io) common.ptod("Native.readAndValidate start: %s %08x ", name, lba);
-    long rc = readAndValidate(handle,logical_lba,lba,xfersize,buffer,key_count,keys,name);
-    if (print_each_io) common.ptod("Native.readAndValidate end:   %s %08x %d", name, lba, rc);
+    long rc = multiKeyReadAndValidate(handle, data_flag, file_start_lba, lba, xfersize, buffer, key_count,
+                                      keys, compressions, dedup_sets, name, wkl);
     return rc;
   }
 
-  private static native long fillAndWrite(long   handle,
-                                          long   logical_lba,
-                                          long   lba,
-                                          int    xfersize,
-                                          long   buffer,
-                                          int    key_count,
-                                          int[]  keys,
-                                          String name);
-  public static long fillAndWriteBlock(long   handle,
-                                       long   logical_lba,
-                                       long   lba,
-                                       int    xfersize,
-                                       long   buffer,
-                                       int    key_count,
-                                       int[]  keys,
-                                       String name)
+  private static native long multiKeyFillAndWrite(long   handle,
+                                                  long   tod,
+                                                  int    data_flag,
+                                                  long   file_start_lba,
+                                                  long   file_lba,
+                                                  int    data_length,
+                                                  long   pattern_lba,
+                                                  int    pattern_length,
+                                                  long   buffer,
+                                                  int    key_count,
+                                                  int[]  keys,
+                                                  long[] compressions,
+                                                  long[] dedup_sets,
+                                                  String name,
+                                                  int    wkl);
+  public static long multiKeyFillAndWriteBlock(long   handle,
+                                               long   tod,
+                                               int    data_flag,
+                                               long   file_start_lba,
+                                               long   file_lba,
+                                               int    data_length,
+                                               long   pattern_lba,
+                                               int    pattern_length,
+                                               long   buffer,
+                                               int    key_count,
+                                               int[]  keys,
+                                               long[] compressions,
+                                               long[] dedup_sets,
+                                               String name,
+                                               int    wkl)
+
   {
     if (name.length() != 8)
-      common.failure("fillAndWriteBlock(): 'name' must be 8 characters long: >>>" + name + "<<<");
-    if (print_each_io) common.ptod("Native.fillAndWrite start: %s %08x", name, lba);
-    long rc = fillAndWrite(handle, logical_lba,lba,xfersize,buffer,key_count,keys,name);
-    if (print_each_io) common.ptod("Native.fillAndWrite end:   %s %08x %d", name, lba, rc);
+      common.failure("multiKeyFillAndWriteBlock(): 'name' must be 8 characters long: >>>" + name + "<<<");
+    long rc = multiKeyFillAndWrite(handle, tod, data_flag, file_start_lba,
+                                   file_lba, data_length, pattern_lba,
+                                   pattern_length, buffer, key_count,
+                                   keys, compressions, dedup_sets, name, wkl);
     return rc;
   }
 
-  static native void fillLFSR(int[] sector_array, long lba, int key, String name);
+  static native void fillLfsrArray  (int[] sector_array, long lba, int key, String name);
+  static native void fillLfsrBuffer (long  buffer,       int  xfersize, long lba, int key, String name);
 
   static native int eraseFileSystemCache(long handle, long size);
+
+
+  static native String getErrorText(int errno);
+
+
+  /**
+   * Cause a chmod 777 fname
+   */
+  public static native long chmod(String fname);
+
+  /**
+   * Get the cpu tick count (only used for Linux at this time)
+   */
+  public static native long getTickCount();
+
+
+  /**
+   * Solaris only: ftruncate
+   */
+  public static native long truncateFile(long handle, long size);
 
 
   public static void main(String[] args)
@@ -447,7 +479,7 @@ public class Native
     String name = "12345678";
 
     int[] array = new int[512 / 4 ];
-    fillLFSR(array, lba, key, name);
+    fillLfsrArray(array, lba, key, name);
 
     for (int i = 0; i < array.length; i+=4)
     {

@@ -1,26 +1,10 @@
 package Vdb;
+import java.util.HashMap;
+import java.util.Vector;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -31,8 +15,8 @@ package Vdb;
  */
 class Operations
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.";
 
   private static String[] operations =
   {
@@ -46,38 +30,57 @@ class Operations
     "delete",
     "getattr",
     "setattr",
+    "access",
     "open",
     "close"
 
     // we should add a 'backward sequential' file selection?
-
-
   };
 
-  public static final int READ    = getOperationIdentifier("Read");
-  public static final int WRITE   = getOperationIdentifier("Write");
-  public static final int MKDIR   = getOperationIdentifier("Mkdir");
-  public static final int RMDIR   = getOperationIdentifier("Rmdir");
-  public static final int COPY    = getOperationIdentifier("Copy");
-  public static final int MOVE    = getOperationIdentifier("Move");
-  public static final int CREATE  = getOperationIdentifier("Create");
-  public static final int DELETE  = getOperationIdentifier("Delete");
-  public static final int GETATTR = getOperationIdentifier("Getattr");
-  public static final int SETATTR = getOperationIdentifier("Setattr");
-  public static final int OPEN    = getOperationIdentifier("Open");
-  public static final int CLOSE   = getOperationIdentifier("Close");
+  private static HashMap <String, Integer> operations_map = new HashMap(32);
+
+  private static boolean[] operations_used = new boolean[64];
+
+  public static final int READ    = addOperation("Read");
+  public static final int WRITE   = addOperation("Write");
+  public static final int MKDIR   = addOperation("Mkdir");
+  public static final int RMDIR   = addOperation("Rmdir");
+  public static final int COPY    = addOperation("Copy");
+  public static final int MOVE    = addOperation("Move");
+  public static final int CREATE  = addOperation("Create");
+  public static final int DELETE  = addOperation("Delete");
+  public static final int GETATTR = addOperation("Getattr");
+  public static final int SETATTR = addOperation("Setattr");
+  public static final int ACCESS  = addOperation("Access");
+  public static final int OPEN    = addOperation("Open");
+  public static final int CLOSE   = addOperation("Close");
 
 
+  private static int addOperation(String operation)
+  {
+    int opnumber = operations_map.size();
+    operation    = operation.toLowerCase();
+    operations_map.put(operation, opnumber);
+    return opnumber;
+  }
+
+  /**
+   * Translate operation String to an integer.
+   * Since this call is made very early on, also keep track of which
+   * operations are really used.
+   */
   public static int getOperationIdentifier(String operation)
   {
-    for (int i = 0; i < operations.length; i++)
-    {
-      if (operations[i].equalsIgnoreCase(operation))
-        return i;
-    }
+    operation = operation.toLowerCase();
 
-    //common.ptod("getOperationIdentifier(): unknown operation: " + operation);
-    return -1;
+    Integer opnumber = operations_map.get(operation);
+    if (opnumber == null)
+      return -1;
+    else
+    {
+      operations_used [ opnumber ] = true;
+      return opnumber;
+    }
   }
 
 
@@ -88,8 +91,30 @@ class Operations
     return operations[op];
   }
 
+  /**
+   * This method is meant for some infrequently used operations to allow them
+   * ONLY to be included in the output when used.
+   * BTW: flatfile is left alone.
+   */
+  public static boolean isOperationUsed(int op)
+  {
+    return operations_used [ op ];
+  }
+
   public static int getOperationCount()
   {
     return operations.length;
+  }
+
+  public static boolean keepControlFile(Vector <FwgEntry> fwgs_for_slave)
+  {
+    for (FwgEntry fwg : fwgs_for_slave)
+    {
+      if (fwg.getOperation() == Operations.CREATE) return false;
+      if (fwg.getOperation() == Operations.MKDIR) return false;
+      if (fwg.getOperation() == Operations.RMDIR) return false;
+      if (fwg.getOperation() == Operations.DELETE) return false;
+    }
+    return true;
   }
 }

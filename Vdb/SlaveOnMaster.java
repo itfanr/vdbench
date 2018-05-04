@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -36,8 +18,8 @@ import java.util.*;
  */
 public class SlaveOnMaster extends ThreadControl
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private SlaveSocket socket_to_slave;
   private Slave       slave;
@@ -63,7 +45,7 @@ public class SlaveOnMaster extends ThreadControl
       {
         /* Whether this is a clean shutdown or not, set the status: */
         //slave.setShutdown(true);
-        common.plog("SlaveOnMaster terminating: " + slave.getLabel());
+        //common.plog("SlaveOnMaster terminating: " + slave.getLabel());
       }
       else
         common.plog("SlaveOnMaster terminating. No proper slave identification.");
@@ -93,7 +75,8 @@ public class SlaveOnMaster extends ThreadControl
     try
     {
       /* Make sure everything is in sync between master and slave: */
-      if (!signonSlave())
+      String pid_txt = signonSlave();
+      if (pid_txt == null)
       {
         socket_to_slave.close();
         return;
@@ -101,7 +84,7 @@ public class SlaveOnMaster extends ThreadControl
 
 
       /* This slave is now up and ready. */
-      slave.setConnected();
+      slave.setConnected(pid_txt);
 
 
       /* From now on, all messages received from the socket come here: */
@@ -133,11 +116,7 @@ public class SlaveOnMaster extends ThreadControl
         else if (msgno == SocketMessage.SLAVE_ABORTING)
         {
           String txt = (String) sm.getData();
-          common.ptod("");
-          common.ptod("**********************************************************");
-          common.ptod("Slave " + slave.getLabel() + " aborting: " + txt);
-          common.ptod("**********************************************************");
-          common.ptod("");
+          BoxPrint.printOne("Slave " + slave.getLabel() + " aborting: " + txt);
           slave.setAborted(txt);
 
           SlaveList.killSlaves();
@@ -162,10 +141,9 @@ public class SlaveOnMaster extends ThreadControl
           if (SlaveList.allSequentialDone())
           {
             common.ptod("All sequential workloads on all slaves are done.");
-            if (!SD_entry.isTapeTesting())
-              common.ptod("This triggers end of run inspite of possibly some "+
-                          "non-sequential workloads that are still running.");
-            Vdbmain.setWorkloadDone(true);
+            common.ptod("This triggers end of run inspite of possibly some "+
+                        "non-sequential workloads that are still running.");
+            //Vdbmain.setWorkloadDone(true);
           }
         }
 
@@ -178,9 +156,18 @@ public class SlaveOnMaster extends ThreadControl
         else if (msgno == SocketMessage.ERROR_MESSAGE)
         {
           if (sm.getData() instanceof String)
-            ErrorLog.printMessageOnLog(slave.getLabel() + ": " + (String) sm.getData());
+            ErrorLog.ptod(slave.getLabel() + ": " + (String) sm.getData());
           else
-            ErrorLog.printMessagesOnLog(slave.getLabel() + ":", (Vector) sm.getData());
+            ErrorLog.ptodSlave(slave, (Vector) sm.getData());
+        }
+
+        else if (msgno == SocketMessage.ERROR_LOG_MESSAGE)
+        {
+          if (sm.getData() instanceof String)
+            ErrorLog.plog(slave.getLabel() + ": " + (String) sm.getData());
+          else
+            common.failure("ERROR_LOG_MESSAGE tbd");
+            //ErrorLog.printMessagesOnLog(slave.getLabel() + ":", (Vector) sm.getData());
         }
 
         else if (msgno == SocketMessage.CONSOLE_MESSAGE)
@@ -198,6 +185,12 @@ public class SlaveOnMaster extends ThreadControl
                 common.ptod(lines.elementAt(i));
             }
           }
+        }
+
+        else if (msgno == SocketMessage.SUMMARY_MESSAGE)
+        {
+          common.psum(slave.getLabel() + ": " + (String) sm.getData());
+          common.ptod(slave.getLabel() + ": " + (String) sm.getData());
         }
 
         else if (msgno == SocketMessage.ADM_MESSAGES)
@@ -237,6 +230,7 @@ public class SlaveOnMaster extends ThreadControl
 
     catch (Exception e)
     {
+      common.ptod(e);
       common.failure(e);
     }
 
@@ -250,11 +244,12 @@ public class SlaveOnMaster extends ThreadControl
    * in case there were errors somewhere that did not cause all slaves to
    * bet terminated
    */
-  public boolean signonSlave()
+  public String signonSlave()
   {
 
     /* Let's make sure that this slave is acceptable: */
     SocketMessage sm = new SocketMessage(SocketMessage.SEND_SIGNON_INFO_TO_MASTER);
+    sm.setData(new Integer(common.getProcessId()));
     socket_to_slave.putMessage(sm);
 
     sm = socket_to_slave.getMessage();
@@ -264,7 +259,7 @@ public class SlaveOnMaster extends ThreadControl
     {
       common.ptod("Killing Slave; wrong message received: " + sm.getMessageNum());
       killSlaveSignonError();
-      return false;
+      return null;
     }
 
     /* Verify the data that we received. If the data is wrong, tell the */
@@ -273,21 +268,24 @@ public class SlaveOnMaster extends ThreadControl
     {
       common.ptod("Killing Slave; no String[] array received");
       killSlaveSignonError();
-      return false;
+      return null;
     }
 
     /* Must have a fixed array size: */
-    String data[]     = (String[]) sm.getData();
+    String data[] = (String[]) sm.getData();
+    if (data.length != SocketMessage.SIGNON_INFO_SIZE)
+    {
+      common.ptod("Killing Slave; Only String[] array of " + data.length + " received");
+      killSlaveSignonError();
+      return null;
+    }
+
     String master_ip  = data[0];
     String slave_name = data[1];
     String os_name    = data[2];
     String os_arch    = data[3];
-    if (data.length != 4)
-    {
-      common.ptod("Killing Slave; Only String[] array of " + data.length + " received");
-      killSlaveSignonError();
-      return false;
-    }
+    String pid_txt    = data[4];
+    String utc        = data[5];
 
     /* We must know the slave: */
     slave = SlaveList.findSlaveName(slave_name);
@@ -295,9 +293,16 @@ public class SlaveOnMaster extends ThreadControl
     {
       common.ptod("Killing slave: invalid slave name: " + slave_name);
       killSlaveSignonError();
-      return false;
+      return null;
     }
     socket_to_slave.setSlaveLabel(slave.getLabel());
+
+    /* This is an easier fix that having Vdbench automagically adjust for deltas: */
+    /* Of course, if it took this message 30 seconds to get across we have other problems. */
+    long delta = Math.abs(System.currentTimeMillis() - Long.parseLong(utc)) + 1;
+    if (delta >= 30*1000)
+      common.ptod("Clock synchronization warning: slave %s is %d seconds out of sync. This can lead to heartbeat issues.",
+                  slave.getLabel(), delta / 1000);
 
     /* Remember OS type: */
     slave.getHost().setOS(os_name, os_arch);
@@ -309,7 +314,7 @@ public class SlaveOnMaster extends ThreadControl
       {
         common.ptod("Killing slave: invalid master IP address: " + master_ip + "; expecting: " + common.getCurrentIP());
         killSlaveSignonError();
-        return false;
+        return null;
       }
     }
 
@@ -325,13 +330,13 @@ public class SlaveOnMaster extends ThreadControl
     {
       common.ptod("Successful signon confirmation failed: " + sm.getMessageNum());
       killSlaveSignonError();
-      return false;
+      return null;
     }
 
     /* Now we're this far, it is time to mark this slave as 'connected': */
     slave.setSlaveSocket(socket_to_slave);
 
-    return true;
+    return pid_txt;
   }
 
 

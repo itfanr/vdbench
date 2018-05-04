@@ -1,41 +1,25 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
+ */
+
+/*
+ * Author: Henk Vandenbergh.
  */
 
 import java.util.Vector;
 
 import Utils.Format;
 
-/*
- * Author: Henk Vandenbergh.
- */
 
 /**
  * Format all directories and/or all files.
  */
 class OpFormat extends FwgThread
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private OpMkdir   mkdir  = null;
   private OpCreate  create = null;
@@ -48,7 +32,7 @@ class OpFormat extends FwgThread
   public OpFormat(Task_num tn, FwgEntry fwg)
   {
     super(tn, fwg);
-    signal = new Signal(30);
+    signal = new Signal(15);
 
 
     /* If 'format' is requested, we just fake it by creating                   */
@@ -74,47 +58,55 @@ class OpFormat extends FwgThread
     if (SlaveWorker.work.format_flags.format_clean)
       return false;
 
+    // Format no longer uses FwgWaiter for all of its operations.
+    // This has been done because some FSDs were just much faster than others.
+    // We still have the mkdir/create synchronization.
+    // Because of tis we should do the stuff below as a 'while true' loop, and
+    // remove the 'format' check in FwgWaiter.
+    // With this we then no longer will need (I think) the FWG suspension!
+    //  TBD.
+
     /* Do 'mkdir' as long as needed: */
     if (fwg.anchor.mkdir_threads_running.notZero())
     {
       /* Don't create directories if we have more threads than width: */
-      if (format_thread_number >= fwg.anchor.width)
-      {
-        FwgWaiter.getMyQueue(fwg).suspend();
-        waitForAllOtherThreads(fwg.anchor.mkdir_threads_running, "mkdir");
-        FwgWaiter.getMyQueue(fwg).restart();
-      }
 
-      else
+      // We were suspending this FwgEntry (in waitFor) even BEFORE any work was done.
+      // While suspended, we never allowed the suspended threads to say that they were done.
+      //
+      //
+      //if (format_thread_number >= fwg.anchor.width)
+      //  waitForAllOtherThreads(fwg, fwg.anchor.mkdir_threads_running, "mkdir");
+      //
+      //else
       {
         if (!mkdir.doOperation() || !fwg.anchor.moreDirsToFormat())
-        {
-          FwgWaiter.getMyQueue(fwg).suspend();
-          waitForAllOtherThreads(fwg.anchor.mkdir_threads_running, "mkdir");
-          FwgWaiter.getMyQueue(fwg).restart();
-        }
+          waitForAllOtherThreads(fwg, fwg.anchor.mkdir_threads_running, "mkdir");
       }
+
+      return true;
     }
 
     /* If we only format directories, stop now: */
-    else if (SlaveWorker.work.format_flags.format_dirs_requested)
+    if (SlaveWorker.work.format_flags.format_dirs_requested)
       return false;
 
+
     /* Do 'create' as long as needed: */
-    else if (fwg.anchor.create_threads_running.notZero())
+    if (fwg.anchor.create_threads_running.notZero())
     {
+      /* (This reports info for every X:) */
       reportStuff("Created", fwg.anchor.getFileCount(), fwg.anchor.getExistingFileCount());
       if (!create.doOperation() || !fwg.anchor.anyFilesToFormat())
       {
-        FwgWaiter.getMyQueue(fwg).suspend();
-        waitForAllOtherThreads(fwg.anchor.create_threads_running, "create");
-        FwgWaiter.getMyQueue(fwg).restart();
+        waitForAllOtherThreads(fwg, fwg.anchor.create_threads_running, "create");
 
         return false;
       }
+      return true;
     }
 
-    else
+    //else
     {
       //common.ptod("fwg.anchor.getFullFileCount(): " + fwg.anchor.getFullFileCount());
       reportStuff("Formatted", fwg.anchor.getFileCount(), fwg.anchor.getFullFileCount());
@@ -128,25 +120,23 @@ class OpFormat extends FwgThread
    * Want to rewrite this some day.
    */
   private static Object duplicate_lock = new Object();
-  private static int    last_pct = -1;
-  private void reportStuff(String task, double total, double done)
+  private void reportStuff(String task, long total, long count)
   {
     /* Prevent multiple threads from giving the same message: */
     synchronized (duplicate_lock)
     {
       int one_pct = (int) total / 100;
-      if (done % one_pct == 0 && signal.go())
+      if (one_pct != 0 && count % one_pct == 0 && signal.go())
       {
-        double pct = done * 100 / total;
+        double pct = count * 100. / total;
 
         /* Prevent multiple threads reporting the same threshold: */
-        if (last_pct <= one_pct)
+        if (fwg.anchor.last_format_pct <= one_pct)
         {
-          SlaveJvm.sendMessageToConsole("anchor=" + fwg.anchor.getAnchorName() +
-                                        ": " + task + " " + (long) done + " of " +
-                                        (long) total +
-                                        Format.f(" files (%.2f%%)", pct));
-          last_pct = one_pct;
+          SlaveJvm.sendMessageToConsole("anchor=%s: %s %d of %d files (%.2f%%)",
+                                        fwg.anchor.getAnchorName(),
+                                        task, count, total, pct);
+          fwg.anchor.last_format_pct = one_pct;
         }
       }
     }
@@ -161,8 +151,14 @@ class OpFormat extends FwgThread
    * for any of the three mkdir/create/write steps, regardles of any anchor
    * having less files than others and therefore finishing earlier.
    */
-  private void waitForAllOtherThreads(FormatCounter counter, String txt) throws InterruptedException
+  private void waitForAllOtherThreads(FwgEntry      fwg,
+                                      FormatCounter counter,
+                                      String        txt) throws InterruptedException
   {
+    /* Suspend FwgWaiter logic for this FWG: */
+    FwgWaiter.getMyQueue(fwg).suspendFwg();
+
+
     synchronized (counter)
     {
       /* Lower 'count of threads': */
@@ -181,23 +177,30 @@ class OpFormat extends FwgThread
 
         /* Sleep a bit. This allows one second interval reporting to */
         /* complete its last interval. This is for debugging only */
-        common.sleep_some(1000);
+        //common.sleep_some(1000);
 
         /* Wake up everybody else: */
         counter.notifyAll();
 
         /* Make sure round robin starts at the beginning of the file list: */
         fwg.anchor.startRoundRobin();
+
+        /* Tell FwgWaiter to start using this FWG again: */
+        FwgWaiter.getMyQueue(fwg).restartFwg();
+
+        return;
       }
 
       /* Wait until all threads are done: */
       while (counter.counter > 0)
       {
-        counter.wait(1000); // without the wait time it hung again???
+        counter.wait(100); // without the wait time it hung again???
       }
 
       /* When we exit here, the threads pick up the next operation, */
       /* either 'create' or 'write'. */
+
+      //common.ptod("waitForAllOtherThreads2: %-12s %-15s %d", txt, fwg.anchor.getAnchorName(), counter.counter);
     }
     //common.plog("exit: '" + txt + "' complete for anchor=" + fwg.anchor.getAnchorName());
   }

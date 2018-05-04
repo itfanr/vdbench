@@ -1,32 +1,15 @@
 package Vdb;
-
-/*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
- */
-
-
-/*
- * Author: Henk Vandenbergh.
- */
+    
+/*  
+ * Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved. 
+ */ 
+    
+/*  
+ * Author: Henk Vandenbergh. 
+ */ 
 
 import java.io.Serializable;
+import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Random;
 import java.util.Vector;
@@ -35,36 +18,39 @@ import Utils.Format;
 
 
 /**
-  */
-public class Histogram extends VdbObject implements java.io.Serializable, Cloneable
+ * Code to maintain response time histogram statistics.
+ *
+ * There is one thing still to do: run a separate thread that every 'n' seconds
+ * sorts the bucket list, or instead, create an MRU list for the buckets.
+ * May also want to remember the --last-- bucket used to possibly find a quick
+ * match. However, if the list is sorted frequently that is implied.
+ */
+public class Histogram implements java.io.Serializable, Cloneable
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
-
-  public  static int CHART_HEIGHT = 25;
+  private final static String c = 
+  "Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved."; 
 
   private long[] counters = null;
-  private double highest_pct = 0;
-  private BucketLine[] bucket_lines;
 
   private BucketRanges ranges;
   private BucketRanges sorted_ranges;
 
-  private ArrayList print_lines;
+  private boolean header_printed = false;
 
-  private long total_operations;    /* Calculated by getprintableData() */
+  private static DecimalFormat df = new DecimalFormat("#,###");
+  private static String STARS = "--------------------------------------------------";
+  private static String PLUS  = "++++++++++++++++++++++++++++++++++++++++++++++++++";
 
 
 
   public Histogram(String type)
   {
-    ranges   = BucketRanges.getRanges(type);
+    ranges   = BucketRanges.getRangesFromType(type);
     counters = new long[ ranges.getBucketCount() ];
 
     /* Create a clone of the ranges. That list may be sorted to help find */
     /* those bucket ranges that are used most quicker, saving cycles:     */
     sorted_ranges = (BucketRanges) ranges.clone();
-
   }
 
   public Object clone()
@@ -120,58 +106,19 @@ public class Histogram extends VdbObject implements java.io.Serializable, Clonea
     }
   }
 
-  public void printBucket(String label)
-  {
-    String txt = Format.f("%-8s: ", label);
-    for (int i = 0; i < counters.length; i++)
-    {
-      txt += counters[i] + " ";
-    }
-    common.ptod(txt);
-  }
-
 
   /**
-   * Return information about the bucket contents, ready to be printed.
+   * Get a long[] array to be used for Jni code.
+   * This array contains a pair of longs for each bucket low and high.
    */
-  public void getPrintableData()
+  public long[] getJniBucketArray()
   {
-    bucket_lines = new BucketLine[ranges.getBucketCount()];
-
-    /* Calculate total of buckets: */
-    total_operations = 0;
-    for (int i = 0; i < counters.length; i++)
-      total_operations += counters[i];
-
-    /* Calculate the highest %% to maybe establish the chart height: */
-    //long max_pct = 0;
-    //for (int i = 0; i < counters.length; i++)
-    //  max_pct = Math.max(counters[i] * 100 / total, max_pct);
-
-    /* Now Calculate each bucket's percentage: */
-    for (int i = 0; i < counters.length; i++)
-    {
-      double pct = (total_operations == 0) ? 0 : counters[i] * 100 / total_operations;
-      bucket_lines[i] = new BucketLine(pct, i, counters[i], ranges);
-      highest_pct = Math.max(highest_pct, pct);
-    }
-
-
-    /* If we have too many buckets, cut them down by removing the vertical */
-    /* lines representing zero counts: */
-    if (bucket_lines.length > 50)
-    {
-      Vector tmp = new Vector(100);
-      for (int i = 0; i < bucket_lines.length; i++)
-      {
-        if (i == 0 || i == bucket_lines.length - 1)
-          tmp.add(bucket_lines[i]);
-        else if (bucket_lines[i].count > 0)
-          tmp.add(bucket_lines[i]);
-      }
-
-      bucket_lines = (BucketLine[]) tmp.toArray(new BucketLine[0]);
-    }
+    return ranges.getJniBucketArray();
+  }
+  public void storeJniBucketArray(long[] array)
+  {
+    for (int i = 0; i < array.length / 3; i++)
+      counters[i] = array [i * 3 + 2];
   }
 
 
@@ -179,231 +126,113 @@ public class Histogram extends VdbObject implements java.io.Serializable, Clonea
   {
     return counters;
   }
-
-  public void showBuckets()
+  public long getTotals()
   {
-    long usecs = 1;
-    for (int i = 0; i < ranges.getBucketCount(); i++)
-    {
-      int bit = findBucket(usecs);
-
-      common.ptod(Format.f("secs %20.6f", usecs / 1000000.) +
-                  Format.f(" %12X", usecs) + " " + bit );
-      usecs *=2;
-    }
+    long total = 0;
+    for (int i = 0; i < counters.length; i++)
+      total += counters[i];
+    return total;
   }
-
-  public Vector printit()
-  {
-    Vector lines = new Vector(64);
-    getPrintableData();
-
-    if (total_operations == 0)
-    {
-      lines.add("There are no 'requested operations' to report for this run.");
-      return lines;
-    }
-
-    lines.add("");
-
-    if (counters.length != bucket_lines.length)
-      lines.add("Histogram has been shrunk to only include those buckets " +
-                "that have a non-zero value.\n");
-
-    /* Print all the bucket maxes: */
-    printAny(lines, "max", "Bucket max:");
-
-    /* Print all the stars: */
-    printStars(lines);
-    //printAny(lines, "stars", "xxx");
-
-    /* Print all the bucket pcts: */
-    printAny(lines, "pct", "Percentage:");
-
-    /* Print all the bucket counts: */
-    printAny(lines, "cnt", "Raw count:");
-
-    //for (int i = 0; i < lines.size(); i++)
-    //  System.out.println(lines.elementAt(i));
-
-    lines.add("Total operations: " + total_operations);
-
-    return lines;
-  }
-
-  private void printStars(Vector lines)
-  {
-    /* Print all the stars: */
-    int offset = 0;
-    boolean firstline = true;
-    while (offset < bucket_lines[0].star_string.length())
-    {
-      String line = "";
-      for (int i = 0; i < bucket_lines.length; i++)
-        line += bucket_lines[i].star_string.charAt(offset) + " ";
-
-      if (line.trim().length() > 0)
-      {
-        String pct_label = "           ";
-        if (firstline)
-          pct_label = "Histogram: ";
-        pct_label += Format.f("%3d%% ", (CHART_HEIGHT-offset) * (100 / Histogram.CHART_HEIGHT));
-
-        lines.add(pct_label + line);
-        firstline = false;
-      }
-      offset++;
-    }
-
-    String stripe = "               ";
-    for (int i = 0; i < bucket_lines.length; i++)
-      stripe += "__";
-    lines.add(stripe);
-
-    lines.add("");
-  }
-
-  /**
-  * Print out the printable information created by getPrintableData().
-  *
-  * You can envision getPrintableData() creating a horizontal representation of
-  * what you will see vertically in the histogram report.
-  * This code will 'rotate' everything left at a 90 degrees angle.
-  */
-  private void printAny(Vector lines, String which, String prefix)
-  {
-    String PREFIX = "%-16s";
-
-    /* Print all the bucket counts: */
-    int offset = 0;
-    boolean first_line = true;
-    while (true)
-    {
-      /* If we are far enough in the 'counts' strings to  */
-      /* now only have blanks, stop here:                 */
-      boolean finished = true;
-      for (int i = 0; i < bucket_lines.length; i++)
-      {
-        String value = bucket_lines[i].getWhich(which);
-        if (value.substring(offset).trim().length() != 0)
-        {
-          finished = false;
-          break;
-        }
-      }
-      if (finished)
-        break;
-
-      /* Pick up the next character from each 'horizontal' line: */
-      String line = "";
-      for (int i = 0; i < bucket_lines.length; i++)
-      {
-        String value = bucket_lines[i].getWhich(which);
-        line += value.charAt(offset) + " ";
-      }
-
-      /* If all we're printing is blanks, ignore this line: */
-      if (line.trim().length() == 0)
-      {
-        offset++;
-        continue;
-      }
-
-      /* The first line in the output gets an extra prefix: */
-      if (first_line)
-        line = Format.f(PREFIX, prefix) + line;
-      else
-        line = Format.f(PREFIX, "") + line;
-      first_line = false;
-
-      /* Skip to the next character to be printed: */
-      offset++;
-      lines.add(line);
-    }
-
-    lines.add("");
-  }
-
 
 
   public static void main(String args[]) throws Exception
   {
-    //showBuckets();
+    double value = Double.parseDouble(args[0]);
+    common.ptod("xx: ===>" + getShort(value, 7) + "<===");
+  }
 
-    /* Fill a test bucket: */
-    Random rand = new Random(0);
-    new BucketRanges("test", "1-30,d,33-45,1");
-    Histogram hist = new Histogram("test");
-    for (int i = 0; i < 10000; i++)
-      hist.addToBucket(Math.abs(rand.nextLong() % 31) + 10);
+  public ArrayList printHistogram(String title)
+  {
+    long total;
+    ArrayList output = new ArrayList(64);
+    //if (!header_printed)
+    //  output.add(printHeader());
 
-    for (int i = 9990; i < hist.counters.length; i++)
+    /* If we have nothing to print, don't bother: */
+    if ((total = getTotals()) == 0)
+      return output;
+
+    output.add(title);
+    String line = String.format(" %8s <  %10s   %10s %8s %8s  ",
+                                "min(ms)", "max(ms)", "count", "%%", "cum%%");
+    output.add(line + "'+': Individual%; '+-': Cumulative%" );
+    output.add("");
+
+    /* Then calculate maximum percentage: */
+    double max_pct = 0;
+    BucketRange[] branges = ranges.getRanges();
+    for (int i = 0; i < branges.length; i++)
+      max_pct = Math.max((double) counters[i] * 100. / total, max_pct);
+
+    /* Fixed value: how many stars per percentage point: */
+    double plus_per_pct = 0.5;
+
+    /* Skip beginning and ending zeroes, but print zeros in the middle: */
+    /* However only use those when requested: */
+    int first = 0;
+    int last  = branges.length -1;
+    if (ranges.suppress())
     {
-      if (hist.counters[i] != 0)
-        common.ptod("bucket: " + i + " " + hist.counters[i]);
+      for (; first < branges.length && counters[first] == 0; first++);
+      for (; last >= 0 && counters[last] == 0; last--);
     }
 
-    Vector lines = hist.printit();
-    for (int i = 0; i < lines.size(); i++)
-      common.ptod(lines.elementAt(i));
+    /* Print the last empty at the beginning and first empty at the end though: */
+    if (first > 0)
+      first--;
+    if (last < branges.length -1)
+      last++;
+
+    long cumulative = 0;
+    for (int i = first; i <= last; i++)
+    {
+      long counter     = counters[ branges[i].which];
+      cumulative      += counter;
+      double pct       = (double) counter * 100. / total;
+      double cum_pct   = (double) cumulative * 100. / total;
+      int plus_needed  = (int) (pct * plus_per_pct);
+      int stars_needed = (int) ((cum_pct - pct) * plus_per_pct);
+      String plusses   = (plus_needed > 0) ? PLUS.substring(0, plus_needed) : "";
+      String stars     = (stars_needed > 0)  ? STARS.substring(0, stars_needed) : "";
+
+
+      String xmax = (branges[i].max == Long.MAX_VALUE) ? "max" : getShort(branges[i].max / 1000., 8);
+      line = String.format(" %8s < %11s %12s %8.4f %8.4f  %s%s",
+                           getShort(branges[i].min / 1000., 8),
+                           xmax,
+                           df.format(counter),
+                           pct, cum_pct, plusses, stars);
+      output.add(line);
+    }
+
+    output.add("");
+
+    return output;
+  }
+
+  private static String getShort(double num, int max)
+  {
+    String txt = String.format("%.3f", num);
+    while (txt.length() > max)
+    {
+      if (txt.endsWith("."))
+        break;
+      txt = txt.substring(0, txt.length() -1);
+    }
+
+    if (txt.endsWith("."))
+      return txt.substring(0, txt.length() -1);
+    return txt;
+  }
+
+  // I currently have no way to stop this from being printed only once for each Report()!!!
+  private String printHeader()
+  {
+    header_printed = true;
+    String hdr = "All but one of the empty buckets at the beginning \n";
+    hdr       += "and all but one empty buckets at the end will will be skipped.\n";
+    hdr       += "Empty buckets in the middle though will be printed.\n";
+    return hdr;
   }
 }
 
-
-class BucketLine extends VdbObject
-{
-  int    pct;
-  long   count;
-  String max_string;
-  String pct_string;
-  String cnt_string;
-  String star_string;
-
-  /* Note: must be a minimum of CHART_HEIGHT bytes: */
-  static String STARS = "";
-  static String BLNKS = "";
-  {
-    for (int i = 0; i < Histogram.CHART_HEIGHT; i++) STARS += "*";
-    for (int i = 0; i < Histogram.CHART_HEIGHT; i++) BLNKS += " ";
-
-  }
-
-  /**
-   * Create an instance with in there all data we need:
-   * - %%
-   * - %% printable
-   * - number of stars to print, right adjusted in a 32-byte string.
-   */
-  public BucketLine(double pct_in, int bucket_no, long cnt, BucketRanges br)
-  {
-    pct = (int) pct_in;
-    count = cnt;
-    max_string = br.getMax(bucket_no) + BLNKS;
-
-    pct_string = (pct_in != 0) ? (Format.f("%3d%%", (int) pct_in) + BLNKS) : BLNKS;
-
-    cnt_string = (count != 0) ? Format.f("%12d", count) + BLNKS : BLNKS;
-
-    int scale = pct / (100 / Histogram.CHART_HEIGHT);
-    star_string  = BLNKS.substring(0, (Histogram.CHART_HEIGHT - scale));
-    star_string += STARS.substring(0, scale);
-
-  }
-
-
-  public String getWhich(String which)
-  {
-    if (which.equals("cnt"))
-      return cnt_string;
-    else if (which.equals("pct"))
-      return pct_string;
-    else if (which.equals("max"))
-      return max_string;
-    else if (which.equals("stars"))
-      return star_string;
-    else
-      common.failure("Illegal which hunt: " + which);
-
-    return null;
-  }
-}

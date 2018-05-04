@@ -1,36 +1,20 @@
 package VdbComp;
+    
+/*  
+ * Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved. 
+ */ 
+    
+/*  
+ * Author: Henk Vandenbergh. 
+ */ 
 
-/*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
- */
-
-
-/*
- * Author: Henk Vandenbergh.
- */
-
+import java.awt.Color;
 import java.io.*;
 import java.util.*;
-import Utils.common;
+
 import Utils.Fget;
 import Utils.Fput;
+import Utils.common;
 
 /**
  * This class handles parameters saved across sessions.
@@ -38,8 +22,8 @@ import Utils.Fput;
  */
 public class StoredParms
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c = 
+  "Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved."; 
 
   static int last_width  = 800;
   static int last_height = 400;
@@ -48,7 +32,8 @@ public class StoredParms
 
   public static void loadParms()
   {
-    double[] limits  = null;
+    Delta[] deltas = Delta.getDeltas();
+    double[] limits  = new double[deltas.length];;
 
     String ini = Utils.ClassPath.classPath("wlcomp.ini");
     if (!Fget.file_exists(ini))
@@ -59,30 +44,38 @@ public class StoredParms
     String line = null;
     while ((line = fg.get()) != null)
     {
-      if (line.startsWith("old"))
+      String[] split = line.trim().split(" +");
+
+      if (split[0].equals("old"))
         WlComp.old_dir = line.substring(4);
 
-      else if (line.startsWith("new"))
+      else if (split[0].equals("new"))
         WlComp.new_dir = line.substring(4);
 
-      else if (line.startsWith("delta"))
+      else if (split[0].equals("delta"))
       {
-        if (idx == 0)
-          limits = new double[Delta.getDeltas().length];
-        limits[idx++] = Double.parseDouble(line.substring(6));
+        limits[idx] = Double.parseDouble(split[1]);
+        if (split.length > 2)
+        {
+          deltas[idx].color = new Color(Integer.parseInt(split[2]),
+                                        Integer.parseInt(split[3]),
+                                        Integer.parseInt(split[4]));
+          deltas[idx].setBackground(deltas[idx].color);
+        }
+        idx++;
       }
 
-      else if (line.startsWith("width"))
-        last_width = Integer.parseInt(line.substring(6));
+      else if (split[0].equals("width"))
+        last_width = Integer.parseInt(split[1]);
 
-      else if (line.startsWith("height"))
-        last_height = Integer.parseInt(line.substring(7));
+      else if (split[0].equals("height"))
+        last_height = Integer.parseInt(split[1]);
 
-      else if (line.startsWith("x"))
-        last_x = Integer.parseInt(line.substring(2));
+      else if (split[0].equals("x"))
+        last_x = Integer.parseInt(split[1]);
 
-      else if (line.startsWith("y"))
-        last_y = Integer.parseInt(line.substring(2));
+      else if (split[0].equals("y"))
+        last_y = Integer.parseInt(split[1]);
     }
 
     fg.close();
@@ -109,9 +102,14 @@ public class StoredParms
 
     Delta[] deltas = Delta.getDeltas();
     for (int i = 0; i < deltas.length; i++)
-      fp.println("delta " + deltas[i].limit);
+      fp.println("delta " + deltas[i].limit + " " +
+                 deltas[i].color.getRed() + " " +
+                 deltas[i].color.getGreen() + " " +
+                 deltas[i].color.getBlue()
+                );
 
     fp.close();
   }
 }
+
 

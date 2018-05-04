@@ -1,0 +1,27 @@
+#!/bin/bash
+#
+#
+# On system brm-macmini-01 / interop from Rick McLean  2/12/2015
+#
+#
+#
+java=/System/Library/Frameworks/JavaVM.framework/Versions/A/Headers
+vdbench=/net/sbm-240a.us.oracle.com/export/sae/hvandenb/vdbench504
+
+cd $vdbench/Jni
+#rm *.o
+
+CFLAGS="-arch i386 -arch x86_64"
+LDFLAGS="-arch i386 -arch x86_64"
+INCLUDES="-I/usr/include -I$vdbench/Jni -I$java"
+
+gcc ${CFLAGS} ${INCLUDES} -c vdbjni.c
+gcc ${CFLAGS} ${INCLUDES} -c vdb_dv.c
+gcc ${CFLAGS} ${INCLUDES} -c vdb.c
+gcc ${CFLAGS} ${INCLUDES} -c vdbmac.c
+
+/usr/bin/gcc  -dynamiclib -shared -o  $vdbench/mac/libvdbench.dylib vdbjni.o vdbmac.o vdb_dv.o vdb.o  -lm -shared ${LDFLAGS}
+
+
+exit
+

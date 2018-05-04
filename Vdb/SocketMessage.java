@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -32,25 +14,32 @@ import java.io.*;
  * This class contains the Object that gets passed back and forth between
  * sockets.
  */
-class SocketMessage implements Serializable
+public class SocketMessage implements Serializable
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private int    message_number;
   private Object data_object;
   private long   quick_info;
   private int    message_seqno;
-                                                      //   master  slave
-  public static int SEND_SIGNON_INFO_TO_MASTER = 1;   //          ><
-  public static int SEND_SIGNON_SUCCESSFUL     = 2;   //          >
-  public static int KILL_SLAVE_SIGNON_ERROR    = 3;   //          >
-  public static int GET_LUN_INFO_FROM_SLAVE    = 4;   //
-  public static int ERROR_MESSAGE              = 5;   //
-  public static int COUNT_ERRORS               = 6;   //
-  public static int WORK_TO_SLAVE              = 7;   //          >
-  public static int CONFIRM_WORK_TO_MASTER     = 8;   //             unused
-  public static int REQUEST_SLAVE_STATISTICS   = 9;   //          >
+
+  /* These two fields are really only for debugging to see how long         */
+  /* the socket transfer takes. Field SlaveSocket.shortest_delta is used to */
+  /* serve as a 'base' if clocks on both sides are not in sync.             */
+  /* (I don't think that sync works correctly)                              */
+  public long    send_time;
+  public long    receive_time;
+  //                                                        master  slave
+  public static int SEND_SIGNON_INFO_TO_MASTER =  1;  //          ><
+  public static int SEND_SIGNON_SUCCESSFUL     =  2;  //          >
+  public static int KILL_SLAVE_SIGNON_ERROR    =  3;  //          >
+  public static int GET_LUN_INFO_FROM_SLAVE    =  4;  //
+  public static int ERROR_MESSAGE              =  5;  //          <
+  public static int COUNT_ERRORS               =  6;  //
+  public static int WORK_TO_SLAVE              =  7;  //          >
+  public static int ERROR_LOG_MESSAGE          =  8;  //          <
+  public static int REQUEST_SLAVE_STATISTICS   =  9;  //          >
   public static int SLAVE_STATISTICS           = 10;  //          <
   public static int SLAVE_WORK_COMPLETED       = 11;  //
   public static int CLEAN_SHUTDOWN_SLAVE       = 12;  //
@@ -66,12 +55,14 @@ class SocketMessage implements Serializable
   public static int WORKLOAD_DONE              = 22;  //
   public static int CLEAN_SHUTDOWN_COMPLETE    = 23;  //
   public static int CONSOLE_MESSAGE            = 24;  //
-  public static int ADM_MESSAGES               = 25;  //
-  public static int HEARTBEAT_MESSAGE          = 26;  //
-  public static int STARTING_FILE_STRUCTURE    = 27;  //
-  public static int ENDING_FILE_STRUCTURE      = 28;  //
-  public static int READY_FOR_MORE_WORK        = 29;  //
-  public static int ANCHOR_SIZES               = 30;  //
+  public static int SUMMARY_MESSAGE            = 25;  //
+  public static int ADM_MESSAGES               = 26;  //
+  public static int HEARTBEAT_MESSAGE          = 27;  //
+  public static int STARTING_FILE_STRUCTURE    = 28;  //
+  public static int ENDING_FILE_STRUCTURE      = 29;  //
+  public static int READY_FOR_MORE_WORK        = 30;  //
+  public static int ANCHOR_SIZES               = 31;  //
+  public static int USER_DATA_TO_SLAVES        = 32;  //
 
 
   private static String[] text=
@@ -101,16 +92,21 @@ class SocketMessage implements Serializable
     ,"WORKLOAD_DONE             "
     ,"CLEAN_SHUTDOWN_COMPLETE   "
     ,"CONSOLE_MESSAGE           "
+    ,"SUMMARY_MESSAGE           "
     ,"ADM_MESSAGES              "
     ,"HEARTBEAT_MESSAGE         "
     ,"STARTING_FILE_STRUCTURE   "
     ,"ENDING_FILE_STRUCTURE     "
     ,"READY_FOR_MORE_WORK       "
     ,"ANCHOR_SIZES              "
+    ,"USER_DATA_TO_SLAVES       "
   };
 
   private static int seqno = 0;
   private static Object sequence_lock = new Object();
+
+  public static int SIGNON_INFO_SIZE = 6;
+
 
   public SocketMessage(int message)
   {
@@ -119,8 +115,8 @@ class SocketMessage implements Serializable
 
   public SocketMessage(int message, Object data)
   {
-    this.message_number = message;
-    this.data_object    = data;
+    message_number = message;
+    data_object = data;
   }
 
   public void setData(Object data)

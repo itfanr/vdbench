@@ -1,32 +1,13 @@
 package Vdb;
+import java.io.File;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
-
-
 
 /**
   * The common class contains some general service methods
@@ -37,11 +18,8 @@ package Vdb;
   */
 public class SizeOf
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
-
-
-
+  private final static String c =
+  "Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.";
 
   public static void main(String args[]) throws Exception
   {
@@ -55,7 +33,7 @@ public class SizeOf
    **/
   public static void sizeof(String args[]) throws Exception
   {
-    int loops = 1000000;
+    int loops = 2000000;
     if (args.length > 0)
       loops = Integer.parseInt(args[0]) * 1000000;
     Object[] sink = new Object[loops];
@@ -69,19 +47,30 @@ public class SizeOf
 
     for (int i = 0; i < loops; i++)
     {
-      sink[i] = new Kstat_data();
+      //sink[i] = new Directory();
+      //sink[i] = new FwdCounter(null);
+      sink[i] = new Histogram("default");
+
+      //((Directory) sink[i]).debugging =
+      //  "/net/sbm-240a.us.oracle.com/export/henk-adp-test/fsd1/"+
+      //  "vdb.1_5.dir/vdb.2_1.dir/vdb.3_10.dir/vdb.4_9.dir/vdb.5_9.dir/vdb.6_1.dir/vdb.7_6.dir" + i;
+
+
+      //sink[i] = new File(
+      //"/net/sbm-240a.us.oracle.com/export/henk-adp-test/fsd1/"+
+      //"vdb.1_5.dir/vdb.2_1.dir/vdb.3_10.dir/vdb.4_9.dir/vdb.5_9.dir/vdb.6_1.dir/vdb.7_6.dir" + i);;
+
     }
 
 
     System.gc();
     System.gc();
-    double used_at_end = Runtime.getRuntime().totalMemory() -
-                         Runtime.getRuntime().freeMemory();
 
-    common.ptod("used_at_start: " + used_at_start / 1048576.);
-    common.ptod("used_at_end:   " + used_at_end / 1048576.);
-    common.ptod("used_at_end:   " + (used_at_end - used_at_start));
-    common.ptod("estimated size per instance: " + (int) ((used_at_end - used_at_start) / loops));
+
+    Jmap.runJmap();
+
+    long total_heap = Jmap.getTotalHeap();
+    common.ptod("bytes per loop: " + (total_heap / loops));
 
     /* This code is here to assure that GC can not clean up the sink array yet: */
     long dummy = 0;

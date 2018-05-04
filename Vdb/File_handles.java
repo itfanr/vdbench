@@ -1,103 +1,109 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
 
+import java.io.File;
 import java.util.*;
 
 
 
 /**
  * Class used to store references to file handles.
- *
- * It was shown that windows allows only one concurrent i/o to a file handle,
- * this compared to Solaris where you can do as many as you want.
- * We get around this problem by having a separate handle for each active thread.
- *
- * For completeness, we store all file handles, windows and others.
  */
 class File_handles
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private String   label   = null;   /* Label only used if there's no SD */
   private SD_entry sd      = null;
-  private long     fhandle = 0;
 
-  private static HashMap handle_map = new HashMap(256);
-
+  private static HashMap <Long, Object> handle_map = new HashMap(256);
 
 
 
-  public static synchronized void addHandle(long fhandle, SD_entry sd)
+
+  public static synchronized void addHandle(long handle, SD_entry sd)
   {
-    Long handle = new Long(fhandle);
     if (handle_map.get(handle) != null)
       common.failure("File_handles.addHandle(): duplicate handle: " + sd.sd_name);
 
-    handle_map.put(handle, sd);
+    if (handle_map.put(handle, sd) != null)
+      common.failure("Duplicate file handle %d for sd=%s", handle, sd.sd_name);
   }
 
-  public static synchronized void addHandle(long fhandle, ActiveFile afe)
+  public static synchronized void addHandle(long handle, ActiveFile afe)
   {
-    Long handle = new Long(fhandle);
     if (handle_map.get(handle) != null)
-      common.failure("File_handles.addHandle(): duplicate handle: " + afe.getFileEntry().getName());
+      common.failure("File_handles.addHandle(): duplicate handle: " + afe.getFileEntry().getFullName());
 
-    handle_map.put(handle, afe);
-    //common.ptod("handle_map: " + handle_map.size());
+    if (handle_map.put(handle, afe) != null)
+      common.failure("Duplicate file handle %d for file=%s", handle, afe.getFileEntry().getFullName());
   }
 
 
-  public static synchronized void addHandle(long fhandle, String label)
+  public static synchronized void addHandle(long handle, String label)
   {
-    Long handle = new Long(fhandle);
     if (handle_map.get(handle) != null)
       common.failure("File_handles.addHandle(): duplicate handle: " + label);
 
-    handle_map.put(handle, label);
+    if (handle_map.put(handle, label) != null)
+      common.failure("Duplicate file handle %d for label=%s", handle, label);
   }
 
-  public static synchronized void remove(long fhandle)
+  public static synchronized void remove(long handle)
   {
-    Long handle = new Long(fhandle);
     if (handle_map.remove(handle) == null)
-      common.failure("File_handles.remove(): unkown handle: " + fhandle);
+      common.failure("File_handles.remove(): unknown handle: " + handle);
   }
 
-
-
-  public static Object findHandle(long fhandle)
+  public static Object findHandle(long handle)
   {
-    Long handle = new Long(fhandle);
     Object obj  = handle_map.get(handle);
     if (obj == null)
-      common.failure("File_handles.findHandle(): unkown handle: " + fhandle);
+      common.failure("File_handles.findHandle(): unknown handle: " + handle);
 
     return obj;
+  }
+
+
+  /**
+   * Return the file name for this handle.
+   * If we don't have this handle, that's fine, return a fake name.
+   */
+  public static String getFileName(long handle)
+  {
+    Object obj  = handle_map.get(handle);
+    if (obj == null)
+      return "File_handles.getFileName(handle=" + handle + ")";
+
+    if (obj instanceof SD_entry)
+    {
+      SD_entry sd = (SD_entry) obj;
+      return sd.lun;
+    }
+    if (obj instanceof ActiveFile)
+    {
+      ActiveFile afe = (ActiveFile) obj;
+      return afe.getFileEntry().getFullName();
+    }
+    if (obj instanceof String)
+      return (String) obj;
+
+    //common.failure("getFileName() invalid request: " + obj);
+
+    return "File_handles.getFileName(" + handle + ")";
+  }
+
+  public static String getLastName(long handle)
+  {
+    String fname = getFileName(handle);
+    return new File(fname).getName();
   }
 }

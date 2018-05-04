@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -32,23 +14,27 @@ import java.io.*;
 
 /**
  * This class contains all information obtained from the FWD parameters:
- * 'Filesystem Workload definition".
+ * 'Filesystem Workload Definition".
  */
 class FwdEntry implements Cloneable
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
-
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   public  String    fwd_name      = "default";
   public  String    fsd_names[]   = new String[0];
-  public  String[]  host_names    = new String[] { "*" };
+  public  String[]  host_names    = new String[] { "*"};
   public  String    target_fsd    = null;
 
   public  double[]  xfersizes     = new double[] { 4096 };
+
   public  boolean   select_random = false;
+  public  boolean   select_once   = false;
+  public  double    poisson_skew  = 0;
+
   public  boolean   sequential_io = true;
   public  boolean   del_b4_write  = false;
+  public  boolean   file_sharing  = false;
   public  long      stopafter     = Long.MAX_VALUE;
   public  double    skew          = 0;
   public  int       threads       = 1;
@@ -58,6 +44,8 @@ class FwdEntry implements Cloneable
 
   private int       operation     = Operations.getOperationIdentifier("read");
 
+  public  static int max_fwd_name = 0;
+
   private static    Vector fwd_list = new Vector(8);
   public  static    boolean  format_fwd_found = false;
   public  static    FwdEntry recovery_fwd = null;
@@ -66,7 +54,7 @@ class FwdEntry implements Cloneable
   public  static    FwdEntry format_fwd = new FwdEntry();
   static
   {
-    format_fwd.xfersizes = new double[] {65536};
+    format_fwd.xfersizes = new double[] {128*1024};  // equal to dedupunit=
     format_fwd.threads   = 8;
   };
 
@@ -137,14 +125,20 @@ class FwdEntry implements Cloneable
 
             else if (fwd.fwd_name.equals("format"))
             {
-              format_fwd       = fwd;
-              format_fwd_found = true;
+              format_fwd           = fwd;
+              format_fwd_found     = true;
+
+              /* This is needed because otherwise 'fwd=default' value will be used: */
+              format_fwd.xfersizes = new double[] { 128*1024 };
               common.plog("'fwd=format' will be used only for 'format=' workloads.");
-              common.plog("Only the 'threads=' and the first 'xfersize=' will be used.");
+              common.plog("Only the 'threads=' and 'openflags=' and the first 'xfersize=' will be used.");
             }
 
             else
+            {
+              max_fwd_name = Math.max(max_fwd_name, fwd.fwd_name.length());
               fwd_list.add(fwd);
+            }
 
             if (Vdbmain.isWdWorkload())
               common.ptod("'fwd' and 'wd' parameters are mutually exclusive");
@@ -169,30 +163,15 @@ class FwdEntry implements Cloneable
           if (prm.getAlphaCount() > 1)
             common.failure("'fwd=" + fwd.fwd_name + ",operations=' accepts only ONE parameter.");
           fwd.operation = Operations.getOperationIdentifier(prm.alphas[0]);
+          if (fwd.operation == -1)
+            common.failure("Unknown operation: " + prm.alphas[0]);
         }
 
         else if ("fileselect".startsWith(prm.keyword))
-        {
-          if ("random".startsWith(prm.alphas[0]))
-            fwd.select_random = true;
-          else if ("sequential".startsWith(prm.alphas[0]))
-            fwd.select_random = false;
-          else
-            common.failure("Invalid 'fileselect' parameter contents: " + prm.alphas[0]);
-        }
+          fwd.parseFileSelect(prm.raw_values);
 
         else if ("fileio".equals(prm.keyword))
-        {
-          if ("random".startsWith(prm.alphas[0]))
-            fwd.sequential_io = false;
-          else if ("sequential".startsWith(prm.alphas[0]))
-          {
-            fwd.sequential_io = true;
-            fwd.del_b4_write = (prm.getAlphaCount() > 1 && "delete".startsWith(prm.alphas[1]));
-          }
-          else
-            common.failure("Invalid 'fileio' parameter contents: " + prm.alphas[0]);
-        }
+          fwd.fileIoParameters(prm);
 
         else if ("xfersizes".startsWith(prm.keyword))
         {
@@ -209,7 +188,10 @@ class FwdEntry implements Cloneable
         }
 
         else if ("skew".startsWith(prm.keyword))
+        {
           fwd.skew = prm.numerics[0];
+          Host.noMultiJvmForFwdSkew();
+        }
 
         else if ("threads".startsWith(prm.keyword))
           fwd.threads = (int) prm.numerics[0];
@@ -228,7 +210,7 @@ class FwdEntry implements Cloneable
         }
 
         else if ("openflags".startsWith(prm.keyword))
-          fwd.open_flags = new OpenFlags(prm.alphas);
+          fwd.open_flags = new OpenFlags(prm.alphas, prm.numerics);
 
         else
           common.failure("Unknown keyword: " + prm.keyword);
@@ -291,7 +273,15 @@ class FwdEntry implements Cloneable
     {
       FwdEntry fwd = (FwdEntry) fwd_list.elementAt(i);
       if (fwd.fsd_names.length == 0)
-        common.failure("fwd paramerter requires at least one 'fsd='");
+        common.failure("fwd parameter requires at least one 'fsd='");
+    }
+
+    /* fileselect=seq if fileio=shared is used: */
+    for (int i = 0; i < fwd_list.size(); i++)
+    {
+      FwdEntry fwd = (FwdEntry) fwd_list.elementAt(i);
+      if (fwd.file_sharing && fwd.select_random)
+        common.failure("'fileio=(random,shared)' and 'fileselect=random' are mutually exclusive");
     }
 
     /* If 'target' is specified, operation=copy/move is required */
@@ -392,7 +382,7 @@ class FwdEntry implements Cloneable
     return(FsdEntry[]) fsds.values().toArray(new FsdEntry[0]);
   }
 
-  public static Vector getFwdList()
+  public static Vector <FwdEntry> getFwdList()
   {
     return fwd_list;
   }
@@ -406,6 +396,96 @@ class FwdEntry implements Cloneable
       names.put(fwd.fwd_name, fwd);
     }
 
-    return (String[]) names.keySet().toArray(new String[0]);
+    return(String[]) names.keySet().toArray(new String[0]);
+  }
+
+
+  private void fileIoParameters(Vdb_scan prm)
+  {
+    if ("random".startsWith(prm.alphas[0]))
+    {
+      sequential_io = false;
+      if (prm.getAlphaCount() > 1)
+      {
+        if ("shared".startsWith(prm.alphas[1]))
+        {
+          if (Validate.isRealValidate())
+            common.failure("'fileio=(random,shared)' may not be used with Data Validation");
+          file_sharing = true;
+        }
+        else
+          common.failure("Invalid 'fileio' parameter contents: " + prm.alphas[1]);
+      }
+    }
+
+    else if ("sequential".startsWith(prm.alphas[0]))
+    {
+      sequential_io = true;
+      if (prm.getAlphaCount() > 1)
+      {
+        if ("delete".startsWith(prm.alphas[1]))
+          del_b4_write = true;
+        else
+          common.failure("Invalid 'fileio' parameter contents: " + prm.alphas[1]);
+      }
+    }
+    else
+      common.failure("Invalid 'fileio' parameter contents: " + prm.alphas[0]);
+  }
+
+  /**
+   * fileselect=
+   *
+   * - random
+   * - sequential
+   * - once
+   * - xxxxx
+   * - average=nn
+   */
+  private void parseFileSelect(ArrayList <String> parms)
+  {
+    for (String parm : parms)
+    {
+      if ("random".startsWith(parm))
+        select_random = true;
+
+      else if ("sequential".startsWith(parm))
+        select_random = false;
+
+      else if (parm.equals("once"))
+        select_once = true;
+
+      else if (parm.equals("skewed"))  // renamed to 'poisson' after first tests
+      {
+        select_random = true;
+        poisson_skew = 3;
+      }
+
+      else if (parm.equals("poisson"))
+      {
+        select_random = true;
+        poisson_skew = 3;
+      }
+
+      else if (parm.startsWith("midpoint=")) // also for compatibility
+      {
+        String[] split = parm.split("=");
+        if (split.length != 2)
+          common.failure("Invalid 'fileselect' parameter contents: " + parm);
+        if (!common.isNumeric(split[1]))
+          common.failure("Invalid 'fileselect' parameter contents: " + parm);
+
+        select_random = true;
+        poisson_skew = Double.parseDouble(split[1]);
+        if (poisson_skew <= 0)
+          common.failure("Invalid 'fileselect' parameter contents: " + parm);
+      }
+
+      else if (common.isDouble(parm))
+        poisson_skew = Double.parseDouble(parm);
+
+      else
+        common.failure("Invalid 'fileselect' parameter contents: " + parm);
+    }
   }
 }

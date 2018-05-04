@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -38,9 +20,10 @@ import Utils.Fput;
  */
 public class FwdReport extends Report
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
+  private static int total_header_lines = 1;
 
   /**
    * Report FWD statistics for this interval for all hosts and slaves.
@@ -87,6 +70,12 @@ public class FwdReport extends Report
     {
       FwdEntry fwd  = (FwdEntry) FwdEntry.getFwdList().elementAt(i);
       Report.getReport(fwd.fwd_name).getData().reportInterval(kc_total);
+
+      /* There is a bug: when running multiple formats there are multiple    */
+      /* format FWDs and the code is writing a line for each possible format */
+      /* on the same file. Just end it after the first.                      */
+      if (fwd.fwd_name.equals("format"))
+        break;
     }
 
     if (isKstatReporting())
@@ -129,6 +118,9 @@ public class FwdReport extends Report
       }
 
       Report.getReport(host).getData().reportFwdTotal(kstat_cpu, avg);
+
+      if (NfsStats.areNfsReportsNeeded())
+        host.PrintNfsstatTotals(avg);
     }
 
     Kstat_cpu kstat_cpu = Report.getSummaryReport().getData().getTotalCpuStats();
@@ -138,6 +130,11 @@ public class FwdReport extends Report
     fwd_total.printLine(Report.getSummaryReport(), kstat_cpu, avg);
     if (!Vdbmain.kstat_console)
       fwd_total.printLine(Report.getStdoutReport(), kstat_cpu, avg);
+
+    /* Write the run total also in the totals file: */
+    if (total_header_lines++ % 10 == 1)
+      fwd_total.printHeaders(Report.getTotalReport());
+    fwd_total.printLine(Report.getTotalReport(), kstat_cpu, avg);
 
     fwd_total.writeFlat(avg, kstat_cpu);
     if (CpuStats.isCpuReporting())
@@ -149,8 +146,8 @@ public class FwdReport extends Report
 
     /* Report summary histogram: */
     Report report = Report.getReport("histogram");
-    report.println("Total of all requested operations: ");
-    report.println(fwd_total.getTotalHistogram().printit());
+    String title = "Total of all requested operations: ";
+    report.println(fwd_total.getTotalHistogram().printHistogram(title));
 
     for (int i = 0; i < FsdEntry.getFsdList().size(); i++)
     {
@@ -159,7 +156,7 @@ public class FwdReport extends Report
       /* Report summary histogram: */
       report        = Report.getReport(fsd, "histogram");
       ReportData rs = report.getData();
-      report.println(rs.getTotalFwdStats().getTotalHistogram().printit());
+      report.println(rs.getTotalFwdStats().getTotalHistogram().printHistogram(title));
     }
 
     for (int i = 0; i < FwdEntry.getFwdList().size(); i++)
@@ -169,10 +166,14 @@ public class FwdReport extends Report
       /* Report summary histogram: */
       report        = Report.getReport(fwd, "histogram");
       ReportData rs = report.getData();
-      report.println(rs.getTotalFwdStats().getTotalHistogram().printit());
-    }
+      report.println(rs.getTotalFwdStats().getTotalHistogram().printHistogram(title));
 
-    CpuStats.cpu_shortage();
+      /* There is a bug: when running multiple formats there are multiple    */
+      /* format FWDs and the code is writing a line for each possible format */
+      /* on the same file. Just end it after the first.                      */
+      if (fwd.fwd_name.equals("format"))
+        break;
+    }
 
     return fwd_total;
   }

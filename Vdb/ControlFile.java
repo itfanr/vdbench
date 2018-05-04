@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -33,11 +15,12 @@ import Utils.Fget;
 import Utils.Format;
 import Utils.Fput;
 
+
 /**
  * Vdbench File System testing control file.
  *
  * The file starts with information indicating as to when this control
- * file was written to last: at the BEGIN of a run or at the END.
+ * file was written to the last time: at the BEGIN of a run or at the END.
  *
  * File continues with those values that determine the directory and
  * file structure: depth, width, files, distribution and the file sizes.
@@ -45,11 +28,19 @@ import Utils.Fput;
  * The file is then followed by directory information, and then by file
  * information.
  *
+ *
+ * Warning: since the introduction of fsd=xxx,shared=yes the control file is no
+ * longer used, which means that a user CAN change the file structure without
+ * being forced to do a format.
+ * It was decided 3/9/2015 that it was not worth the effort and the risk to fix
+ * it since this problem has been out there for already 4+ years!
+ *
+ *
  */
-class ControlFile extends VdbObject
+class ControlFile
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private FileAnchor anchor;
   private boolean[]  directory_status;
@@ -114,7 +105,7 @@ class ControlFile extends VdbObject
     /* No need for file status when shared: */
     if (!shared)
     {
-      Vector dirs = anchor.getDirectoryList();
+      Vector dirs = anchor.getDirList();
       fp.println("directory status " + dirs.size());
 
       /* Write the directory status: */
@@ -144,6 +135,11 @@ class ControlFile extends VdbObject
       for (int i = 0; i < sizes; i++)
       {
         FileEntry fe = (FileEntry) files.elementAt(i);
+
+        //common.ptod("ControlFile.writeControlFile: %s %4b %8d %8d %4b",
+        //            fe.getFullName(), fe.exists(), fe.getReqSize(), fe.getCurrentSize(),
+        //            Fget.file_exists(fe.getFullName()));
+
         writeFileStatus(fp, fe, i, (i == sizes - 1));
 
         total_req += fe.getReqSize();
@@ -159,6 +155,19 @@ class ControlFile extends VdbObject
         }
       }
 
+      fp.close();
+
+      /* Re-read the control file and create a checksum: */
+      long checksum = 0;
+      for (String line : Fget.readFileToArray(fp.getName()))
+      {
+        for (int i = 0; i < line.length(); i++)
+          checksum += line.charAt(i);
+      }
+
+      /* Now add this checksum to the end: */
+      fp = new Fput(fp.getName(), true);
+      fp.println("checksum: %d ", checksum);
       fp.close();
 
       common.ptod("Completed control file for anchor=" +
@@ -246,7 +255,7 @@ class ControlFile extends VdbObject
       status = "" + fe.getCurrentSize();
 
     if (debug)
-      status += " " + index + " " + fe.getName();
+      status += " " + index + " " + fe.getFullName();
 
     return status;
   }
@@ -268,6 +277,15 @@ class ControlFile extends VdbObject
   /**
    * Compare contents of control file with current setting for this anchor.
    * It also loads existing directory and file status.
+   *
+   * Interesting observation, though I do not consider the user deliberately
+   * deleting the control file 'normal operations': when the control file does
+   * not exist when running format=no, this code just falls through without
+   * errors.
+   *
+   * Next observation: during a format=yes the control file is written, and then
+   * during deleteOldStuff() gets deleted again, but then at the end, correctly,
+   * it is written again.
    */
   public void readControlFile(FwgEntry fwg)
   {
@@ -281,6 +299,31 @@ class ControlFile extends VdbObject
     String[] split = null;
 
     common.ptod("Reading control file for anchor=" + anchor.getAnchorName());
+
+    /* Start with reading and verifying checksum: */
+    long checksum = 0;
+    boolean checksum_found = false;
+
+
+    for (String line : Fget.readFileToArray(anchor.getAnchorName(), CONTROL_FILE))
+    {
+      if (line.startsWith("checksum:"))
+      {
+        long old_check = Long.parseLong(line.split(" +")[1]);
+        if (checksum != old_check)
+          common.failure(" Corruption in control file '%s' Checksums: %d/%d",
+                         anchor.getAnchorName(), old_check, checksum);
+        else
+          checksum_found = true;
+      }
+      for (int i = 0; i < line.length(); i++)
+        checksum += line.charAt(i);
+    }
+
+    if (!checksum_found)
+      common.failure("No checksum found in control file for %s", anchor.getAnchorName());
+
+
     Fget fg = new Fget(anchor.getAnchorName(), CONTROL_FILE);
     String line = null;
 
@@ -344,7 +387,7 @@ class ControlFile extends VdbObject
     if (!when.equals("end"))
     {
       common.ptod("Anchor=" + anchor.getAnchorName() + ": Previous run did not "+
-                  "complete. Directory and file content will not be used");
+                  "complete. control file directory and file content will not be used");
       fg.close();
       return;
     }
@@ -398,8 +441,10 @@ class ControlFile extends VdbObject
           last_status = -1;
         else if (line.startsWith("f"))
           last_status = -2;
+        else if (line.startsWith("checksum:"))
+          continue;
         else
-          last_status = Long.parseLong(line.trim());
+          last_status = Long.parseLong(line.trim().split(" +")[0]);
 
         /* Update the status: */
         file_status[file_index++] = last_status;
@@ -424,7 +469,7 @@ class ControlFile extends VdbObject
 
     for (int i = 0; i < size_index; i++)
     {
-      if (anchor_sizes[i] != from_file[i])
+      if ((int) anchor_sizes[i] != (int) from_file[i])
         return false;
     }
 

@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -39,14 +21,15 @@ import Utils.NfsV4;
  * This class contains information for each host defined by the user,
  * or the default 'localhost'.
  */
-public class Host implements Cloneable
+public class Host implements Cloneable, Comparable
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   public  String  host_ip       = "localhost";  /* network address */
   public  String  host_label    = "localhost";  /* host label, dflt network address */
   public  String  host_vdbench  = ClassPath.classPath();
+  public  int     relative_hostno;
 
   public  int     client_count = 0;
 
@@ -58,11 +41,11 @@ public class Host implements Cloneable
   private int          last_created_jvm  = 0;
   public  boolean      jvms_in_parm      = false;
 
-  private Vector       slaves            = null;
+  private Vector <Slave> slaves            = null;
 
   private InfoFromHost host_info         = null;
 
-  private HashMap      luns_used         = new HashMap(16);
+  private HashMap <String, String> luns_used = new HashMap(16); /* key sd_name, for lun name */
 
   private Report       summary_report    = null;
   private Report       kstat_report      = null;
@@ -78,9 +61,12 @@ public class Host implements Cloneable
   private String os_name;
   private String os_arch;
 
+  /* This list is used per RD, so must be reallocated/cleared each time: */
+  //private ArrayList <WG_entry> wg_list   = null;
 
-  private static Vector defined_hosts = new Vector(16, 0);
+  private static Vector <Host> defined_hosts = new Vector(16, 0);
 
+  public static int max_host_name = 0;
 
   /**
    * This is a DEEP clone!
@@ -105,7 +91,9 @@ public class Host implements Cloneable
 
   public static void addHost(Host h)
   {
+    h.relative_hostno = defined_hosts.size();
     defined_hosts.add(h);
+    max_host_name = Math.max(max_host_name, h.getLabel().length());
 
     if (jvmcount_override != 0)
     {
@@ -120,7 +108,7 @@ public class Host implements Cloneable
     slaves.add(sl);
   }
 
-  public static Vector getDefinedHosts()
+  public static Vector <Host> getDefinedHosts()
   {
     return defined_hosts;
   }
@@ -233,7 +221,7 @@ public class Host implements Cloneable
   {
     return(Slave) slaves.firstElement();
   }
-  public Vector getSlaves()
+  public Vector <Slave> getSlaves()
   {
     return slaves;
   }
@@ -262,6 +250,51 @@ public class Host implements Cloneable
     return false;
   }
 
+
+  /**
+   * This check is necessary because there is a layer of code missing while
+   * spreading out the workloads across slaves.
+   * For raw i/o I spread work across hosts, then slaves on those hosts.
+   * For file system I spread the work across slaves, resulting in, surprise,
+   * slaves not getting their portion of the work.
+   *
+   * So it really is not only a 'skew' problem, 'skew' calculations because of
+   * this are also in error.
+   * It took almost 10 years for this problem to show up, and I just can't
+   * justify the work needed to rectify this.
+   * So this will stay as-is until I can justify the effort, or get bored and
+   * just fix it :-)
+   */
+  public static void noMultiJvmForFwdSkew()
+  {
+    for (Host host : defined_hosts)
+    {
+      if (host.host_jvms > 1)
+      {
+        BoxPrint box = new BoxPrint();
+        box.add("Use of FWD skew= currently not supported when running multi-JVM");
+        box.add("This can be resolved by specifying more Host Definitions (HD)");
+        box.add("For instance:");
+        box.add("");
+        box.add("hd=host1,system=localhost");
+        box.add("hd=host2,system=localhost");
+        box.add("");
+        box.add("or");
+        box.add("");
+        box.add("hd=host1,clients=2");
+        box.add("");
+        box.add("or");
+        box.add("");
+        box.add("hd=default,clients=2");
+        box.add("");
+        box.add("");
+        box.add("This is a workaround for a bug in a rarely used Vdbench option.");
+        box.print();
+        common.failure("No multi-JVM supported for FWD skew");
+      }
+    }
+  }
+
   /**
    * Create a list of slaves using the host names and the requested JVM counts.
    * This can be called twice; the second time after the default number of JVMs
@@ -269,13 +302,9 @@ public class Host implements Cloneable
    */
   public static void createSlaves()
   {
-
     for (int i = 0; i < defined_hosts.size(); i++)
     {
       Host host = (Host) defined_hosts.elementAt(i);
-
-      if (Vdbmain.isReplay() && host.host_jvms > 1)
-        common.failure("Only one Slave allowed for Replay.");
 
       for (int j = host.last_created_jvm; j < host.host_jvms; j++)
       {
@@ -322,6 +351,7 @@ public class Host implements Cloneable
     }
 
     common.failure("Unable to locate host %s (No wildcards allowed)", name);
+
     return null;
   }
 
@@ -430,7 +460,7 @@ public class Host implements Cloneable
    */
   public void addLun(String sdname, String lun)
   {
-    //common.plog("Adding SD to host: " + this.getLabel() + " " + sdname + " " + lun);
+    //common.ptod("Adding SD to host: " + this.getLabel() + " " + sdname + " " + lun);
     if (luns_used.put(sdname, lun) != null)
       common.failure("An SD can only be defined once: sd=" + sdname);
   }
@@ -450,22 +480,48 @@ public class Host implements Cloneable
 
 
   /**
-   * Find the proper host specific lun name for an SD
+   * Find the proper host specific lun name for an SD.
+   * If none is found, use the one coded in the SD_entry itself.
    */
-  public String getLunNameForSd(String sdname)
+  public String getLunNameForSd(SD_entry sd)
   {
-    String lun = (String) luns_used.get(sdname);
+    String lun = luns_used.get(sd.sd_name);
 
-    if (lun != null)
+    if (lun == null)
+    {
+      if (!sd.concatenated_sd && sd.lun == null)
+        common.failure("getLunNameForSd: null sd.lun for sd=%s", sd.sd_name);
+      return sd.lun;
+    }
+    else
       return lun;
-
-    //printSdLunList();
-
-    //common.ptod("Unable to find lun name for sd=" + sdname + ",host=" + getLabel());
-
-    return null;
   }
 
+  public boolean doesHostHaveSd(SD_entry sd)
+  {
+    String lun = luns_used.get(sd.sd_name);
+    return (lun != null);
+  }
+
+  public void replaceLunForSd(String sdname, String new_lun)
+  {
+    if (luns_used.put(sdname, new_lun) == null)
+      common.failure("replaceLunForSd: unknown lun for sd=%s,host=%s,lun=%s",
+                     sdname, getLabel(), new_lun);
+  }
+
+  public int getLunCount()
+  {
+    return luns_used.size();
+  }
+
+  /**
+   * HashMap of SD name with lun name for this host
+   */
+  public HashMap <String, String> getHostLunMap()
+  {
+    return luns_used;
+  }
 
   /**
    * Get list of sd names used for a lun on this host.
@@ -552,7 +608,7 @@ public class Host implements Cloneable
     if (info.getNfs3() != null)
     {
       Report nfs3_report = new Report(getLabel() + ".nfsstat3",
-                               "Host nfs statistics report for host=" + getLabel());
+                                      "Host nfs statistics report for host=" + getLabel());
       String link = (links++ == 0) ? "Host NFS statistics report" : null;
       kstat_report.printHtmlLink(link, nfs3_report.getFileName(), "nfsv3");
       addReport("nfsstat3", nfs3_report);
@@ -564,7 +620,7 @@ public class Host implements Cloneable
     if (info.getNfs4() != null)
     {
       Report nfs4_report = new Report(getLabel() + ".nfsstat4",
-                               "Host nfs statistics report for host=" + getLabel());
+                                      "Host nfs statistics report for host=" + getLabel());
       String link = (links++ == 0) ? "Host NFS statistics report" : null;
       kstat_report.printHtmlLink(link, nfs4_report.getFileName(), "nfsv4");
       addReport("nfsstat4", nfs4_report);
@@ -600,6 +656,295 @@ public class Host implements Cloneable
       NfsStats.NfsPrint(getReport("nfsstat3"), nfs3_delta, nfs3_rep, title, new NfsV3());
     if (nfs4_delta != null)
       NfsStats.NfsPrint(getReport("nfsstat4"), nfs4_delta, nfs4_rep, title, new NfsV4());
+  }
+
+
+  public void PrintNfsstatTotals(String title)
+  {
+    InfoFromHost info = getHostInfo();
+
+    NfsV3 nfs3_totals = info.getNfs3();
+    NfsV4 nfs4_totals = info.getNfs4();
+
+    if (nfs3_totals != null)
+      nfs3_totals = (NfsV3) getReport("nfsstat3").getData().getTotalNfsStats(new NfsV3());
+    if (nfs4_totals != null)
+      nfs4_totals = (NfsV4) getReport("nfsstat4").getData().getTotalNfsStats(new NfsV4());
+
+    /* Print headers if needed: */
+    if (Reporter.needHeaders())
+    {
+      if (nfs3_totals != null)
+        reporting.report_header(getReport("nfsstat3").getWriter(), nfs3_rep);
+      if (nfs4_totals != null)
+        reporting.report_header(getReport("nfsstat4").getWriter(), nfs4_rep);
+    }
+
+    if (nfs3_totals != null)
+      NfsStats.NfsPrint(getReport("nfsstat3"), nfs3_totals, nfs3_rep, title, new NfsV3());
+    if (nfs4_totals != null)
+      NfsStats.NfsPrint(getReport("nfsstat4"), nfs4_totals, nfs4_rep, title, new NfsV4());
+
+
+    if (nfs3_totals != null)
+      NfsStats.NfsPrintVertical(getReport("nfsstat3"), nfs3_totals);
+    if (nfs4_totals != null)
+      NfsStats.NfsPrintVertical(getReport("nfsstat4"), nfs4_totals);
+
+  }
+
+
+
+  /**
+   * Get workloads for all hosts.
+   * See also RD_entry.getAllWorkLoads()
+   */
+  public static ArrayList <WG_entry> getAllWorkloads()
+  {
+    ArrayList <WG_entry> list = new ArrayList(64);
+    for (Host host : getDefinedHosts())
+      list.addAll(host.getWorkloads());
+    return list;
+  }
+
+
+  /**
+   * Get workloads for just this host.
+   */
+  public ArrayList <WG_entry> getWorkloads()
+  {
+    ArrayList <WG_entry> list = new ArrayList(64);
+    for (Slave slave : getSlaves())
+      list.addAll(slave.getWorkloads());
+    return list;
+  }
+
+  public SD_entry[] getSds()
+  {
+    HashMap <String, SD_entry> sdmap = new HashMap(8);
+    for (WG_entry wg : getWorkloads())
+      sdmap.put(wg.sd_used.sd_name, wg.sd_used);
+
+    String[] names = sdmap.keySet().toArray(new String[0]);
+    Arrays.sort(names);
+
+    SD_entry[] sds = new SD_entry[ names.length ];
+    for (int i = 0; i < names.length; i++)
+      sds[ i ] = sdmap.get(names[i]);
+
+    return sds;
+  }
+
+  public String[] getSdNames()
+  {
+    HashMap <String, SD_entry> sdmap = new HashMap(8);
+    for (WG_entry wg : getWorkloads())
+      sdmap.put(wg.sd_used.sd_name, wg.sd_used);
+
+    String[] names = sdmap.keySet().toArray(new String[0]);
+    Arrays.sort(names);
+
+    return names;
+  }
+
+
+
+
+  public ArrayList <WG_entry> getWgsForSd(SD_entry sd)
+  {
+    ArrayList <WG_entry> wgs = new ArrayList(16);
+    for (WG_entry wg : getWorkloads())
+    {
+      if (wg.sd_used == sd)
+        wgs.add(wg);
+    }
+
+    return wgs;
+  }
+
+  public int getSdCount()
+  {
+    HashMap <String, String> sd_name_map = new HashMap(16);
+    for (WG_entry wg : getWorkloads())
+      sd_name_map.put(wg.sd_used.sd_name, wg.sd_used.sd_name);
+    return sd_name_map.size();
+  }
+
+  /**
+   * Remove a workload from one of this hosts slaves.
+   * Be careful: we must manipulate the original Vector of workloads from the
+   * slave in order to remove it from that slave. A newly generated Vector would
+   * not remove it from the original.
+   */
+  public int removeWorkload(WG_entry remove)
+  {
+    int removes = 0;
+    for (Slave slave : getSlaves())
+    {
+      removes += slave.removeWorkload(remove);
+    }
+
+    return removes;
+  }
+
+
+  /**
+   * All random workloads are given to each slave. The remainder, seq, DV,
+   * Replay, etc will be given to the slave that has the least amount of work.
+   *
+   * Note: there is no need to worry about the order in which workloads are
+   * given to the slaves. All non-sequential stuff will be given to ALL slaves
+   * anyway,  so there is no need to first handle all non-seq and then seq
+   * stuff.
+   */
+  public Slave getLeastBusySlave()
+  {
+    if (slaves.size() == 0)
+      common.failure("getLowBusySlave: no slaves available for host=%s", host_label);
+
+    Slave lowest = slaves.get(0);
+    for (Slave slave : slaves)
+    {
+      if (slave.getWorkloads().size() < lowest.getWorkloads().size())
+        lowest = slave;
+    }
+
+    return lowest;
+  }
+
+  /**
+   * Return the slave that has the least amount of threads doing work for a
+   * specific SD. This is done to make sure that all the complex workloads are
+   * not accidentally overloading a specific slave.
+   */
+  public Slave getLeastBusyThreads(SD_entry sd)
+  {
+    if (slaves.size() == 0)
+      common.failure("getLowBusyThreads: no slaves available for host=%s", host_label);
+
+    /* Find the first slave that uses this SD: */
+    Slave lowest = null;
+    first_loop:
+    for (Slave slave : slaves)
+    {
+      for (WG_entry wg : slave.getWorkloads())
+      {
+        if (wg.sd_used == sd)
+        {
+          lowest = slave;
+          break first_loop;
+        }
+      }
+    }
+
+    if (lowest == null)
+      common.failure("getLeastBusyThreads: unable to find available slave for sd=%s", sd.sd_name);
+
+
+    /* Find the slave that uses this SD and has the lowest thread count: */
+    for (Slave slave : slaves)
+    {
+      for (WG_entry wg : slave.getWorkloads())
+      {
+        if (wg.sd_used == sd)
+        {
+          if (slave.getWorkloads().size() > 0 &&
+              slave.threads_given_to_slave < lowest.threads_given_to_slave)
+            lowest = slave;
+        }
+      }
+    }
+
+    return lowest;
+  }
+
+
+  /**
+   * Report all ThreadMonitor totals for each slave and each host.
+   * Note that because of the possibility of different hosts having different
+   * processor counts we can not report an 'all' total if there is indeed a
+   * difference.
+   */
+  public static void reportMonTotals()
+  {
+    ThreadMonList full_totals  = new ThreadMonList();
+    full_totals.processors     = 0;
+    long    last_processors    = 0;
+    boolean processor_mismatch = false;
+
+
+    /* Look at each host: */
+    for (Host host : defined_hosts)
+    {
+      ThreadMonList host_totals = new ThreadMonList();
+
+      /* Pick up all slaves for this host: */
+      for (Slave slave : host.slaves)
+      {
+        /* report this slave's info: */
+        ThreadMonList slave_totals = slave.reportThreadMonSlaveTotals();
+
+        /* Now pick up the slave totals and add them together for this host */
+        /* and also for the overall totals:                                 */
+        for (ThreadMonData td : slave_totals.list)
+        {
+          ThreadMonData total = host_totals.map.get(td.label);
+          if (total == null)
+            host_totals.map.put(td.label, td);
+          else
+            total.accum(td);
+
+          host_totals.elapsed    = slave_totals.elapsed;
+          host_totals.processors = slave_totals.processors;
+
+          if (last_processors != 0 && slave_totals.processors != last_processors)
+            processor_mismatch = true;
+          else
+            last_processors = slave_totals.processors;
+        }
+      }
+
+      host_totals.list = new ArrayList(host_totals.map.values());
+      ThreadMonitor.reportTotals(host.getLabel(),host_totals );
+
+      full_totals.elapsed     = host_totals.elapsed;
+      full_totals.processors += host_totals.processors;
+
+      for (ThreadMonData td : host_totals.list)
+      {
+        ThreadMonData total = full_totals.map.get(td.label);
+        if (total == null)
+          full_totals.map.put(td.label, td);
+        else
+          total.accum(td);
+
+      }
+    }
+
+
+    if (processor_mismatch)
+      common.ptod("Reporting ThreadMonitor run totals not possible because of processor count mismatch.");
+    else
+    {
+      full_totals.list = new ArrayList(full_totals.map.values());
+      ThreadMonitor.reportTotals("Total", full_totals);
+    }
+  }
+
+
+  /**
+   * Sort by Host.
+   * Though it feels correct to compare by host name, we actually want the hosts
+   * to be sorted by the relative host as defined in the parameter file.
+   *
+   * E.g. host1 and host2 sort nicely alphabetically, but
+   * system1 and abc don't.
+   */
+  public int compareTo(Object obj)
+  {
+    Host o1 = (Host) this;
+    Host o2 = (Host) obj;
+    return o1.relative_hostno - o2.relative_hostno;
   }
 }
 

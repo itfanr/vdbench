@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -37,10 +19,10 @@ import Utils.NfsV4;
  * This class contains the information that is returned back from a slave
  * to the master related to vdbench performance statistics
  */
-class SlaveStats extends VdbObject implements Serializable
+public class SlaveStats implements Serializable
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private long         stats_number   = 0;;
 
@@ -50,14 +32,20 @@ class SlaveStats extends VdbObject implements Serializable
   private HashMap      fwg_map        = null;
   private Kstat_cpu    cpu_stats      = null;
 
+  private Vector       user_data      = null;
+
+  public  transient    Slave owning_slave;
+
   /* Each element in kstat_data is in sync with InfoFromHost.instance_pointers, */
   /* and we therefore know host, lun, and instance name.                        */
   private Vector kstat_data     = null;
 
   private long[]       block_counters = null;
 
-  private NfsV3 nfs3_delta = null;
-  private NfsV4 nfs4_delta = null;
+  private NfsV3        nfs3_delta = null;
+  private NfsV4        nfs4_delta = null;
+
+  public  ThreadMonList tmonitor_deltas = new ThreadMonList();
 
 
 
@@ -67,7 +55,7 @@ class SlaveStats extends VdbObject implements Serializable
     stats_number = num;
     block_counters = Blocked.getCounters();
 
-    if (common.get_debug(common.PRINT_BLOCK_COUNTERS))
+    if (SlaveJvm.isThisSlave() && common.get_debug(common.PRINT_BLOCK_COUNTERS))
       Blocked.printCountersToLog();
   }
 
@@ -142,6 +130,20 @@ class SlaveStats extends VdbObject implements Serializable
   public NfsV4 getNfs4()
   {
     return nfs4_delta;
+  }
+
+  public void setUserData(Vector u)
+  {
+    user_data = u;
+  }
+  public Vector getUserData()
+  {
+    return user_data;
+  }
+
+  public void setThreadMonData(ThreadMonList data)
+  {
+    tmonitor_deltas = data;
   }
 
   public void printit()

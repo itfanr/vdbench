@@ -1,26 +1,8 @@
 package VdbComp;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -32,9 +14,9 @@ import java.awt.*;
 import java.awt.event.*;
 import javax.swing.*;
 import javax.swing.table.*;
-import Utils.common;
 import Utils.Fget;
 import Utils.Fput;
+import Vdb.common;
 
 /**
  * Vdbench workload comparator.
@@ -47,11 +29,12 @@ import Utils.Fput;
  */
 public class WlComp extends JFrame implements ActionListener
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.";
 
   public static String old_dir = null;
   public static String new_dir = null;
+  private static boolean dirs_in_parm = false;
 
   public static WlComp wlcomp = null;
 
@@ -60,11 +43,12 @@ public class WlComp extends JFrame implements ActionListener
   public HashMap all_keywords = null;
   public DataModel dm;
 
-  private static JPanel  top_panel  = null;
-  private static JButton old_button = new JButton("Old directory");
-  private static JButton new_button = new JButton("New directory");
-  private static JButton cmp_button = new JButton("Compare");
-  private static JButton ext_button = new JButton("Exit");
+  private static JPanel    top_panel  = null;
+  private static JButton   old_button = new JButton("Old directory");
+  private static JButton   new_button = new JButton("New directory");
+  private static JButton   cmp_button = new JButton("Compare");
+  private static JCheckBox chk_button = new JCheckBox("Hide 0-1%");
+  private static JButton   ext_button = new JButton("Exit");
 
   public static JScrollPane table_panel = null;
 
@@ -87,6 +71,7 @@ public class WlComp extends JFrame implements ActionListener
     old_button.addActionListener(this);
     new_button.addActionListener(this);
     cmp_button.addActionListener(this);
+    chk_button.addActionListener(this);
     ext_button.addActionListener(this);
 
     buildTopPanel();
@@ -106,6 +91,7 @@ public class WlComp extends JFrame implements ActionListener
     top_panel.add(old_button, new GridBagConstraints(x++, 0, 1, 1, 1.0, 1.0, GridBagConstraints.CENTER, GridBagConstraints.HORIZONTAL, new Insets(0, 0, 0, 0), 0, 0));
     top_panel.add(new_button, new GridBagConstraints(x++, 0, 1, 1, 1.0, 1.0, GridBagConstraints.CENTER, GridBagConstraints.HORIZONTAL, new Insets(0, 0, 0, 0), 0, 0));
     top_panel.add(cmp_button, new GridBagConstraints(x++, 0, 1, 1, 1.0, 1.0, GridBagConstraints.CENTER, GridBagConstraints.HORIZONTAL, new Insets(0, 0, 0, 0), 0, 0));
+    top_panel.add(chk_button, new GridBagConstraints(x++, 0, 1, 1, 1.0, 1.0, GridBagConstraints.CENTER, GridBagConstraints.HORIZONTAL, new Insets(0, 0, 0, 0), 0, 0));
     top_panel.add(ext_button, new GridBagConstraints(x++, 0, 1, 1, 1.0, 1.0, GridBagConstraints.CENTER, GridBagConstraints.HORIZONTAL, new Insets(0, 0, 0, 0), 0, 0));
 
     Delta[] deltas = Delta.getDeltas();
@@ -120,6 +106,17 @@ public class WlComp extends JFrame implements ActionListener
   {
     /* Read saved parameters: */
     StoredParms.loadParms();
+
+    /* For debugging or future option? */
+    if (args.length > 1)
+    {
+      dirs_in_parm = true;
+      old_dir = new_dir = new File(args[1]).getAbsolutePath();
+    }
+    if (args.length > 2)
+      new_dir = new File(args[2]).getAbsolutePath();
+    //common.ptod("old_dir: " + old_dir);
+    //common.ptod("new_dir: " + new_dir);
 
     /* Set the frame to the same place and size as before: */
     WlComp frame = new WlComp();
@@ -139,10 +136,14 @@ public class WlComp extends JFrame implements ActionListener
 
       //parseDescriptions();
 
-      dm = new DataModel(this);
+      dm = new DataModel(this, chk_button.isSelected());
       JTable table = new JTable(dm);
       dm.setRenderers(table);
       dm.setColumnWidth(table);
+
+      // need 1.6
+      //TableRowSorter <DataModel> sorter = new TableRowSorter(dm);
+      //table.setRowSorter(sorter);
 
       table_panel = new JScrollPane(table);
 
@@ -179,18 +180,26 @@ public class WlComp extends JFrame implements ActionListener
    */
   private void loadAllData()
   {
-    Vector old_files = new Vector(8, 0);
-    Vector new_files = new Vector(8, 0);
+    Vector <String> old_files = new Vector(8, 0);
+    Vector <String> new_files = new Vector(8, 0);
     Vector old_flats = new Vector(8, 0);
     Vector new_flats = new Vector(8, 0);
 
-    listDir(old_dir, "old", old_files);
-    listDir(new_dir, "new", new_files);
+    listFlatFiles(old_dir, "old", old_files);
+    listFlatFiles(new_dir, "new", new_files);
+
+
+    matchDirectories(old_files, new_files);
+
 
     if (old_files.size() != new_files.size())
       throw new CompException("'old' and 'new' must have the same amount of " +
                               "'flatfile.html' files in its directory structure: " +
                               old_files.size() + " vs. " + new_files.size());
+
+    /* Sort the files to make sure we match old/new correctly: */
+    Collections.sort(old_files);
+    Collections.sort(new_files);
 
     /* Load all run data: */
     old_runs = new Vector(8, 0);
@@ -238,6 +247,68 @@ public class WlComp extends JFrame implements ActionListener
   }
 
 
+  private void matchDirectories(Vector <String> old_files, Vector <String> new_files)
+  {
+    /* Sort the files to make sure we match old/new correctly: */
+    Collections.sort(old_files);
+    Collections.sort(new_files);
+
+    if (old_files.size() + new_files.size() == 2)
+      return;
+
+    HashMap <String, String> old_parents = new HashMap(64);
+    HashMap <String, String> new_parents = new HashMap(64);
+
+    /* Create a parent entry for each directory: */
+    for (int i = 0; i < old_files.size(); i++)
+      old_parents.put(new File(old_files.get(i)).getParentFile().getName(), "x");
+    for (int i = 0; i < new_files.size(); i++)
+      new_parents.put(new File(new_files.get(i)).getParentFile().getName(), "x");
+
+
+    //for (int i = 0; i < old_files.size(); i++)
+    //  common.ptod("old_files: " + old_files.get(i));
+    //for (int i = 0; i < new_files.size(); i++)
+    //  common.ptod("new_files: " + new_files.get(i));
+    //
+    //common.ptod("");
+
+    /* If the OLD directory is not in NEW, remove: */
+    for (int i = 0; i < old_files.size(); i++)
+    {
+      String parent = new File(old_files.get(i)).getParentFile().getName();
+      if (new_parents.get(parent) == null)
+      {
+        common.ptod("No new matching directory found, removing: " + old_files.get(i));
+        old_files.set(i, null);
+      }
+    }
+
+
+    /* if the NEW directory is not in OLD, remove: */
+    for (int i = 0; i < new_files.size(); i++)
+    {
+      String parent = new File(new_files.get(i)).getParentFile().getName();
+      if (old_parents.get(parent) == null)
+      {
+        common.ptod("No old matching directory found, removing: " + new_files.get(i));
+        new_files.set(i, null);
+      }
+    }
+
+    while (old_files.removeElement(null));
+    while (new_files.removeElement(null));
+
+
+    //for (int i = 0; i < old_files.size(); i++)
+    //  common.ptod("old_files: " + old_files.get(i));
+    //for (int i = 0; i < new_files.size(); i++)
+    //  common.ptod("new_files: " + new_files.get(i));
+
+
+    //common.exit(99);
+  }
+
   private void removeLastRuns()
   {
     while (old_runs.size() > new_runs.size())
@@ -273,15 +344,15 @@ public class WlComp extends JFrame implements ActionListener
   /**
    * List the requested directory, looking for 'flatfile.html'
    */
-  private void listDir(String dir, String label, Vector file_list)
+  private void listFlatFiles(String dirname, String label, Vector file_list)
   {
-    if (dir == null)
+    if (dirname == null)
       throw new CompException("No '" + label + "' directory name specified");
 
     /* If this directory name is in the format of 'hnn' for h1/../h8, etc */
     /* it must be ignored. This is the (empty) flatfile directory that is */
     /* created BEFORE Vdbench 5.00 by each slave JVM.                     */
-    String parent = new File(dir).getName();
+    String parent = new File(dirname).getName();
     if (parent.startsWith("h"))
     {
       try
@@ -294,20 +365,20 @@ public class WlComp extends JFrame implements ActionListener
       }
     }
 
-    File file = new File(dir);
-    if (!file.exists())
-      throw new CompException("'" + label + "' directory does not exist: " + dir);
-    if (!file.isDirectory())
-      throw new CompException("'" + label + "' directory name is a file name: " + dir);
+    File dirptr = new File(dirname);
+    if (!dirptr.exists())
+      throw new CompException("'" + label + "' directory does not exist: " + dirname);
+    if (!dirptr.isDirectory())
+      throw new CompException("'" + label + "' directory name is a file name: " + dirname);
 
-    String[] files = file.list();
+    String[] files = dirptr.list();
     for (int i = 0; i < files.length; i++)
     {
       if (files[i].equalsIgnoreCase("flatfile.html"))
-        file_list.add(dir + File.separator + files[i]);
+        file_list.add(dirname + File.separator + files[i]);
 
-      else if (new File(dir, files[i]).isDirectory())
-        listDir(dir + File.separator + files[i], label, file_list);
+      else if (new File(dirname, files[i]).isDirectory())
+        listFlatFiles(dirname + File.separator + files[i], label, file_list);
     }
   }
 
@@ -318,8 +389,15 @@ public class WlComp extends JFrame implements ActionListener
     fc.setDialogTitle("Select '" + label + "' Directory");
     fc.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
 
+    /* Set the current directory to the PARENT, unless directory was given as argument: */
     if (dir != null && Fget.dir_exists(dir))
-      fc.setCurrentDirectory(new File(dir).getParentFile());
+    {
+      if (dirs_in_parm)
+        fc.setCurrentDirectory(new File(dir));
+      else
+        fc.setCurrentDirectory(new File(dir).getParentFile());
+    }
+
 
     /* Keep the same old directory? */
     if (fc.showOpenDialog(null) != fc.APPROVE_OPTION)
@@ -369,6 +447,9 @@ public class WlComp extends JFrame implements ActionListener
     }
 
     else if (cmd.equals(cmp_button.getText()))
+      doCompare();
+
+    else if (cmd.equals(chk_button.getText()))
       doCompare();
 
     else if (cmd.equals(ext_button.getText()))

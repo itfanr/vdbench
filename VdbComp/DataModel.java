@@ -1,26 +1,8 @@
 package VdbComp;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -44,15 +26,15 @@ import Vdb.RD_entry;
  */
 public class DataModel extends AbstractTableModel
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.";
 
   private String[]               column_names = null;
   private FractionCellRenderer[] renderers = null;
-  private Vector                 old_runs;
-  private Vector                 new_runs;
+  private Vector <Run>           old_runs;
+  private Vector <Run>           new_runs;
 
-  public DataModel(WlComp wl)
+  public DataModel(WlComp wl, boolean hide0)
   {
     createcolumn_names(wl);
     old_runs = wl.old_runs;
@@ -61,18 +43,37 @@ public class DataModel extends AbstractTableModel
     /* Remove an rd=format_for_ run: */
     for (int i = 0; i < old_runs.size(); i++)
     {
-      Run run = (Run) old_runs.elementAt(i);
-      if (run.rd_name.startsWith(RD_entry.FORMAT_RUN))
+      Run run = old_runs.get(i);
+      if (run.rd_name.startsWith(RD_entry.FSD_FORMAT_RUN))
         old_runs.set(i, null);
     }
-    while (old_runs.remove(null));
     for (int i = 0; i < new_runs.size(); i++)
     {
-      Run run = (Run) new_runs.elementAt(i);
-      if (run.rd_name.startsWith(RD_entry.FORMAT_RUN))
+      Run run = new_runs.get(i);
+      if (run.rd_name.startsWith(RD_entry.FSD_FORMAT_RUN))
         new_runs.set(i, null);
     }
+    while (old_runs.remove(null));
     while (new_runs.remove(null));
+
+    /* Remove if delta < 1%: */
+    for (int i = 0; hide0 && i < old_runs.size(); i++)
+    {
+      Run old_run = old_runs.get(i);
+      Run new_run = new_runs.get(i);
+      double delta_resp = getDelta(old_run, new_run, "resp");
+      double delta_rate = getDelta(old_run, new_run, "rate");
+      if (Math.abs(delta_resp) < 1 && Math.abs(delta_rate) < 1)
+      {
+        old_runs.set(i, null);
+        new_runs.set(i, null);
+      }
+    }
+
+    while (old_runs.remove(null));
+    while (new_runs.remove(null));
+
+    common.ptod("Amount of runs: " + old_runs.size());
   }
 
 
@@ -154,8 +155,8 @@ public class DataModel extends AbstractTableModel
 
   public Object getValueAt(int row, int col)
   {
-    Run old_run = (Run) old_runs.elementAt(row);
-    Run new_run = (Run) new_runs.elementAt(row);
+    Run old_run = (Run) old_runs.get(row);
+    Run new_run = (Run) new_runs.get(row);
 
     if (column_names[col].equalsIgnoreCase("Subdirectory"))
       return old_run.getSubDir();

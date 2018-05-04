@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -39,13 +21,18 @@ import Utils.Fget;
  */
 public class Vdb_scan
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   public String keyword;                      /* Keyword found in parameter */
-  public String[] alphas   = new String[256]; /* Array of alpha parameters  */
+  public String[] alphas   = new String[512]; /* Array of alpha parameters  */
                                               /* (length is correct)        */
-  public double[] numerics = new double[512]; /* Array of numeric parms     */
+  public double[] numerics = new double[10240]; /* Array of numeric parms     */
+
+  public ArrayList <String> raw_values = new ArrayList(4);
+  public String   raw_value = null;
+
+
   /* (length is correct)        */
   public int    alpha_count;                  /* Number of alpha parms      */
   public int    num_count;                    /* number of numeric parms    */
@@ -53,11 +40,13 @@ public class Vdb_scan
   static BufferedReader br;
   static String  line = null;
   static StringTokenizer st;
-  static PrintWriter copy_file = null;
+  static PrintWriter parm_html = null;
 
   static String list_of_parameters[] = new String[32768];
   static int    parms_read = 0;
   static int    parms_used = 0;
+
+  static boolean external_parms_used = false;
 
   private static void parm_error(String msg)
   {
@@ -88,9 +77,9 @@ public class Vdb_scan
 
       /* Open the file for reading: */
       if (direct)
-        copy_file.println("\n* Contents of parameter file: " + parmfile.getAbsolutePath() + "\n");
+        parm_html.println("\n* Contents of parameter file: " + parmfile.getAbsolutePath() + "\n");
       else
-        copy_file.println("\n* WD parameter read from file: " + parmfile.getAbsolutePath() + "\n");
+        parm_html.println("\n* WD parameter read from file: " + parmfile.getAbsolutePath() + "\n");
 
       try
       {
@@ -98,7 +87,23 @@ public class Vdb_scan
         String line;
         while ((line = fg.get()) != null)
         {
-          copy_file.println(line.replace('@',' '));
+          /* Possible substitution: */
+          String original = line;
+          line = InsertHosts.substituteLine(original);
+
+          /* Any line starting with '*d ' will not be suppressed with debug=99: */
+          if (common.get_debug(common.IGNORE_PARM_COMMENT) && line.startsWith("*d "))
+            line = line.substring(3).trim() + " /* '*d ' accepted */";
+
+          /* If line unchanged, just print it, otherwise print both: */
+          if (line.equals(original))
+            parm_html.println(line.replace('[',' '));
+          else
+          {
+            external_parms_used = true;
+            parm_html.println(original.replace('[',' '));
+            parm_html.println("    variable substitution: " + line.replace('[',' '));
+          }
 
           line = line.trim();
 
@@ -137,32 +142,42 @@ public class Vdb_scan
    */
   private static void readIncludeFile(String include_line, String previous)
   {
+    external_parms_used = true;
     try
     {
       String[] split = include_line.split("=");
       if (split.length != 2)
         common.failure("'include=' parameter mustChange have only one subparameter: " + include_line);
 
-      String include     = split[1];
+      String include = split[1];
 
       /* If the included file name does not contain a file separator, prefix */
-      /* it with the parent directory of the --current-- paremeter file:     */
+      /* it with the parent directory of the --current-- parameter file:     */
       String prev_parent = new File(previous).getParent();
       if (include.indexOf(File.separator) == -1)
         include = prev_parent + File.separator + include;
-
       include = new File(include).getAbsolutePath();
 
-      if (!new File(include).exists())
-        common.failure("include= file does not exist: " + include);
+      /* if the file does not exist, try the CURRENT directory: */
+      if (!Fget.file_exists(include))
+      {
+        String prev = include;
+        include = new File(split[1]).getAbsolutePath();
+        if (!Fget.file_exists(include))
+        {
+          common.ptod("Attempted to find include file '%s'", prev);
+          common.ptod("Attempted to find include file '%s'", include);
+          common.failure("include=%s file not found", split[1]);
+        }
+      }
 
-      copy_file.println("\n* Contents of include file: " + include + "\n");
+      parm_html.println("\n* Contents of include file: " + include + "\n");
 
       Fget fg = new Fget(include);
       String line;
       while ((line = fg.get()) != null)
       {
-        copy_file.println(line.replace('@',' '));
+        parm_html.println(line.replace('[',' '));
 
         line = line.trim();
 
@@ -178,11 +193,13 @@ public class Vdb_scan
             line.length() == 0)
           continue;
 
+        line = InsertHosts.substituteLine(line);
+
         list_of_parameters[parms_read++] = line;
       }
       fg.close();
 
-      copy_file.println("\n* Continuing with original file: " + previous + "\n");
+      parm_html.println("\n* Continuing with original file: " + previous + "\n");
     }
 
     catch (Exception e)
@@ -197,45 +214,10 @@ public class Vdb_scan
    */
   static void xlate_command_line(String args[], int index)
   {
-    /* Each remaining parameter will be treated as if it had come */
-    /* from 'parmfile':                                           */
-    common.ptod("Command line 'parmfile' input. All remaining command line " +
-                "parameters will be treated as if coming from '-fparmfile'");
-
-    parms_read = 0;
-    for (index++; index < args.length; index++)
-    {
-
-      /* Replace 0x0a with blanks, then trim, then replace blanks with ?*/
-      String line = args[index];
-      line = line.replace('\n', ' ');
-      line = line.trim();
-      line = line.replace(' ', '?');
-
-      /* Replace all consecutive blanks with one comma: */
-      char carr[] = line.toCharArray();
-      for (int i = 0; i < carr.length; i++)
-      {
-
-        if ((int) carr[i] < 0x20)
-          carr[i] = '?';
-
-        if (carr[i] == '?')
-        {
-          carr[i] = ',';
-          for (int j = i+1; j < carr.length ; j++, i++)
-          {
-            if (carr[j] != '?')
-              break;
-          }
-        }
-      }
-
-      list_of_parameters[parms_read++] = line.valueOf(carr);
-      if (copy_file != null)
-        copy_file.println(list_of_parameters[parms_read-1]);
-
-    }
+    common.ptod("Entering workload parameters from the command line, e.g. ");
+    common.ptod("./vdbench - sd=sd1,lun=xxxx,.....");
+    common.ptod("is no longer supported. Use of a parameter file is now required");
+    common.failure("Use of parameter file is now required.");
   }
 
 
@@ -249,26 +231,26 @@ public class Vdb_scan
    * Method to translate a parameter file that has one line per parameter
    * to something that is more readable.
    */
-  public static void parms_print(String str)
+  public static void obsolete_parms_print(String str)
   {
     if (false)
     {
       if (str == null)
       {
-        copy_file.println();
+        parm_html.println();
         return;
       }
 
       if (first)
       {
-        copy_file.println();
-        copy_file.println("*Contents of complete parameterfile translated from a");
-        copy_file.println("*possible 'one parameter per line' format to a more readable format:");
-        copy_file.println();
+        parm_html.println();
+        parm_html.println("*Contents of complete parameterfile translated from a");
+        parm_html.println("*possible 'one parameter per line' format to a more readable format:");
+        parm_html.println();
         first = false;
       }
 
-      str = str.replace('@', ' ');
+      str = str.replace('[', ' ');
       str = str.replace('^', ',');
       str = str.replace('{', '=');
       str = str.replace('}', '-');
@@ -285,7 +267,7 @@ public class Vdb_scan
           sd_found = true;
         else
         {
-          copy_file.println(str);
+          parm_html.println(str);
           return;
         }
       }
@@ -294,8 +276,8 @@ public class Vdb_scan
       {
         if (str.toLowerCase().startsWith("sd"))
         {
-          copy_file.println();
-          copy_file.print(str);
+          parm_html.println();
+          parm_html.print(str);
           return;
         }
 
@@ -307,27 +289,27 @@ public class Vdb_scan
       {
         if (str.toLowerCase().startsWith("wd"))
         {
-          copy_file.println();
-          copy_file.print(str);
+          parm_html.println();
+          parm_html.print(str);
           return;
         }
 
         if (str.toLowerCase().startsWith("rd"))
         {
           rd_found = true;
-          copy_file.println();
-          copy_file.print(str);
+          parm_html.println();
+          parm_html.print(str);
           return;
         }
       }
 
       if (str.toLowerCase().startsWith("rd"))
       {
-        copy_file.println();
-        copy_file.print(str);
+        parm_html.println();
+        parm_html.print(str);
       }
       else
-        copy_file.print("," + str);
+        parm_html.print("," + str);
     }
   }
 
@@ -347,6 +329,11 @@ public class Vdb_scan
   public int getAlphaCount()
   {
     return alpha_count;
+  }
+  public void mustBeNumeric()
+  {
+    if (num_count == 0)
+      common.failure("Numeric parameter required for '%s='.", keyword);
   }
 
   /**
@@ -384,11 +371,22 @@ public class Vdb_scan
       line = list_of_parameters[parms_used++];
 
       common.ptod("line: " + line, Vdbmain.parms_report);
-      ////copy_file.println(line.replace('@',' '));
+
+      /* Use the specified override from execution parameters: */
+      if (line.trim().startsWith("rd") &&
+          !line.trim().endsWith(",")   &&
+          Vdbmain.rd_parm_extras.length() != 0)
+      {
+        /* First remove everything beyond the first blank, then add: */
+        String[] split = line.trim().split(" +");
+        line = split[0] + "," + Vdbmain.rd_parm_extras;
+        common.ptod("Adding ',%s' to each one-line RD parameter.", Vdbmain.rd_parm_extras);
+        common.ptod("Added: " + Vdbmain.rd_parm_extras, Vdbmain.parms_report);
+        common.ptod("Extra: " + line,                   Vdbmain.parms_report);
+      }
 
       /* For quotes we must temporarily replace blanks: */
       line = specialize(line);
-      //common.ptod("linea: " + line);
 
       /* If parameter ends with a comma, concatenate the next line: */
       while (line.endsWith(","))
@@ -397,20 +395,19 @@ public class Vdb_scan
           break;
         String nline = list_of_parameters[parms_used++];
         line += specialize(nline);
-        //common.ptod("lineb: " + line);
       }
 
       st = new StringTokenizer(line, ",= ()", true);
     }
 
-
-
     /* Start with a clean slate: */
     value = "";
     paren = false;
+    int parens = 0;
     while (st.hasMoreTokens())
     {
       token = st.nextToken();
+      //common.ptod("parens: " + parens + " " + token);
       if (token == null)
       {
         line = null;
@@ -420,20 +417,22 @@ public class Vdb_scan
       if (token.equals("("))
       {
         paren = true;
+        parens++;
         value = value + token;
         continue;
       }
-      if (token.equals(")") && paren)
+      if (token.equals(")") && parens > 0)
       {
         paren = false;
+        parens--;
         value = value + token;
         continue;
       }
-      if (token.equals(")") && !paren)
+      if (token.equals(")") && parens == 0)
       {
         parm_error("Unmatched Parenthesis ");
       }
-      if (token.equals(",") && paren)
+      if (token.equals(",") && parens > 0)
       {
         value = value + token;
         continue;
@@ -462,27 +461,24 @@ public class Vdb_scan
    * Code needed for the InsertHost() code that repeats each parameter that
    * contains $host or #host.
    */
-  public static String completedHostRepeat(String[] new_lines)
+  public static String completedHostRepeat()
   {
-    /* Replace the array containing all the parameters: */
-    list_of_parameters = new_lines;
-
     /* Force parameters scanning to start again with the line that it */
     /* had started before InsertHosts was called:                     */
     line = null;
     parms_used--;
 
-    /* Pick up the new amount of parameter lies that we now have: */
+    /* Pick up the new amount of parameter lines that we now have: */
     parms_read = list_of_parameters.length;
 
     /* Print the parameters as seen AFTER the change: */
-    copy_file.println(" ");
-    copy_file.println("*");
-    copy_file.println("* Parameters after $host and #host values were replaced:");
-    copy_file.println("*");
-    copy_file.println(" ");
-    for (int i = 0; i < new_lines.length; i++)
-      copy_file.println(new_lines[i]);
+    parm_html.println(" ");
+    parm_html.println("*");
+    parm_html.println("* Parameters after $host and #host values were replaced:");
+    parm_html.println("*");
+    parm_html.println(" ");
+    for (int i = 0; i < list_of_parameters.length; i++)
+      parm_html.println(list_of_parameters[i]);
 
     /* Now read the previously started and possibly changed parameter line: */
     return parms_get();
@@ -513,9 +509,9 @@ public class Vdb_scan
             break;
           }
 
-          /* Replace blank with '@': */
+          /* Replace blank with '[': */
           if (nline.charAt(j) == ' ')
-            nline = nline.substring(0, j) + "@" + nline.substring(j+1);
+            nline = nline.substring(0, j) + "[" + nline.substring(j+1);
 
           /* Replace comma with '^': */
           if (nline.charAt(j) == ',')
@@ -541,15 +537,26 @@ public class Vdb_scan
 
   public long getLong()
   {
-    return (long) numerics[0];
+    return(long) numerics[0];
   }
   public int getInt()
   {
-    return (int) numerics[0];
+    return(int) numerics[0];
+  }
+  public int[] getIntArray()
+  {
+    int[] array = new int[ numerics.length ];
+    for (int i = 0; i < numerics.length; i++)
+      array[i] = (int) numerics[i];
+    return array;
   }
   public double getDouble()
   {
     return numerics[0];
+  }
+  public String getString()
+  {
+    return alphas[0];
   }
 
   /**
@@ -558,11 +565,8 @@ public class Vdb_scan
    */
   public void parms_alfa_or_num(String rest, int index)
   {
-
-    Double dbl;
-
-    /* Remove '@' if needed (was used to allow blanks within quotes): */
-    rest = rest.replace('@', ' ');
+    /* Remove '[' if needed (was used to allow blanks within quotes): */
+    rest = rest.replace('[', ' ');
 
     /* Remove '^' if needed (was used to allow commas within quotes): */
     rest = rest.replace('^', ',');
@@ -574,6 +578,39 @@ public class Vdb_scan
     rest = rest.replace('}', '-');
 
     common.ptod("parm: " + rest, Vdbmain.parms_report);
+
+    /* Ran into a case where a value started with a numeric, and ended with */
+    /* a 'd', e.g. 4600d. This was seen as a numeric instead of an alpha.   */
+    /* For all you know we could get a host name like hd=100g ????          */
+    // Need to fix this some day. Maybe forcing any non-numeric field to
+    // start with an alpha character?
+
+    /* 'Replay' parameters are all alpha: */
+    if (keyword.equals("replay") || keyword.equals("histogram") || keyword.startsWith("misc"))
+    {
+      not_numeric(rest, index);
+      return;
+    }
+
+    if (keyword.equals("iorate") && rest.equals("max"))
+      rest = "" + RD_entry.MAX_RATE;
+
+    try
+    {
+      numerics[index] = Double.parseDouble(rest);
+      num_count++;
+    }
+
+    catch (NumberFormatException e)
+    {
+      not_numeric(rest, index);
+    }
+  }
+
+  private void not_numeric(String rest, int index)
+  {
+    String tail, front;
+    double kmg = 1;
 
     double kilo, mega, giga, terra;
 
@@ -587,34 +624,37 @@ public class Vdb_scan
       mega = 60;
     else if (keyword.startsWith("pa"))   // pause
       mega = 60;
-    else if (keyword.startsWith("wa"))   // pause
+    else if (keyword.startsWith("wa"))   // warmup
       mega = 60;
     else if (keyword.startsWith("reset"))   // ????
       mega = 60;
 
-    try
+
+    /* If last character is a 'k/m/g/%', try again with numeric: */
+    /* (Allow for kb, mb, gb):                                   */
+    tail = rest.substring(rest.length() - 1).toLowerCase();
+    if (tail.equals("b") && rest.length() > 2)
     {
-      dbl = Double.valueOf(rest);
-      numerics[index] = dbl.doubleValue();
-      num_count++;
+      tail  = rest.substring(rest.length() - 2, rest.length() - 1).toLowerCase();
+      front = rest.substring(0, rest.length() - 2).toLowerCase();
+    }
+    else
+      front = rest.substring(0, rest.length() - 1).toLowerCase();
+
+    /* Some parameters may not want numerics to be recognized: */
+    /* (hd=5220h is text, not hours :-)                        */
+    if (keyword.equalsIgnoreCase("histogram") ||
+        keyword.equalsIgnoreCase("host")      ||
+        keyword.equalsIgnoreCase("hd")        ||
+        keyword.equalsIgnoreCase("system") )
+    {
+      alphas[index] = rest;
+      alpha_count++;
+      return;
     }
 
-    catch (NumberFormatException e)
+    else
     {
-      String tail, front;
-      double kmg;
-
-      /* If last character is a 'k/m/g/%', try again with numeric: */
-      /* (Allow for kb, mb, gb):                                   */
-      tail = rest.substring(rest.length() - 1).toLowerCase();
-      if (tail.equals("b") && rest.length() > 2)
-      {
-        tail  = rest.substring(rest.length() - 2, rest.length() - 1).toLowerCase();
-        front = rest.substring(0, rest.length() - 2).toLowerCase();
-      }
-      else
-        front = rest.substring(0, rest.length() - 1).toLowerCase();
-
       if (tail.compareTo("k") == 0)
         kmg = kilo;
       else if (tail.compareTo("m") == 0)
@@ -637,51 +677,46 @@ public class Vdb_scan
         alpha_count++;
 
         if (alpha_count != 0 && num_count != 0)
-          parm_error("Mix of alpha and numeric values not allowed: (" +
-                     keyword + ") " + rest );
+          parm_error("Mix of alpha and numeric values not allowed: (" + keyword + ") " + rest );
 
         return;
       }
-
-      /* Kilo, mega, and gigabytes maybe: */
-      try
-      {
-        dbl = Double.valueOf(front);
-        numerics[index] = dbl.doubleValue() * kmg;
-        num_count++;
-      }
-
-      /* It was k/m/g/%, but there was some other garbage: */
-      catch (NumberFormatException f)
-      {
-        alphas[index] = rest;
-        alpha_count++;
-      }
     }
 
-    //if (alpha_count != 0 && num_count != 0)
-    //  if (alpha_count != 0 && num_count != 0)
-    //    parm_error("Mix of alpha and numeric values not allowed: (" +
-    //               keyword + ") " + rest );
+    /* Kilo, mega, and gigabytes maybe: */
+    try
+    {
+      Double dbl = Double.valueOf(front);
+      numerics[index] = dbl.doubleValue() * kmg;
+      num_count++;
+    }
+
+    /* It was k/m/g/%, but there was some other garbage: */
+    catch (NumberFormatException f)
+    {
+      alphas[index] = rest;
+      alpha_count++;
+    }
   }
+
 
   /**
    * Resize numeric and alpha parameter arrays to its minimum size
    */
   void parms_array_resize()
   {
-    double[] nums = new double[num_count];
-    System.arraycopy(numerics, 0, nums, 0, num_count);
-    numerics = nums;
-
     String[] alfas = new String[alpha_count];
     System.arraycopy(alphas, 0, alfas, 0, alpha_count);
     alphas = alfas;
+
+    double[] nums = new double[num_count];
+    System.arraycopy(numerics, 0, nums, 0, num_count);
+    numerics = nums;
   }
 
   /**
    * Split parameter contents from 'keyword=[xxx]'
-   * Parameters are stored in Vdb_scan.keyword and array alphas[] or numerics
+   * Parameters are stored in Vdb_scan.keyword and array alphas[] or numerics[]
    */
   public static Vdb_scan parms_split(String input)
   {
@@ -693,34 +728,38 @@ public class Vdb_scan
     boolean range = false;
     double v1, v2, v3;
 
-    //common.ptod("input: " +input);
+    if (input == null)
+      common.failure("Unexpected EOF in parameter file.");
 
     /* Look for keyword first: */
     common.ptod("keyw: " + input, Vdbmain.parms_report);
-    tk = new StringTokenizer(input, "=");
-    token = tk.nextToken();
-    if (token == null)
+    String[] split = input.split("=");
+
+    if (split.length == 1)
       parm_error("Expecting 'keyword=' in parameter: " + input);
-    prm.keyword = token.toLowerCase();
+
+    prm.keyword = split[0].toLowerCase();
+
+    if (prm.keyword.equals("dedup"))
+    {
+      prm.raw_value = input;
+      return prm;
+    }
+
+    //common.ptod("keywordxxx: " + prm.keyword);
+    //common.ptod("input: " + input);
 
     /* Minimum 2 characters required: */
     if (prm.keyword.length() < 2)
       parm_error("Keyword must contain a minimum of 2 characters: " + input);
 
-    /* There must be more data after the '=': */
-    if (!tk.hasMoreTokens())
-      parm_error("Expecting value after 'keyword=' in parameter: " + input);
+    rest = input.substring(prm.keyword.length() + 1);
 
-    if ( (rest = tk.nextToken()) == null)
-      parm_error("Expecting value after 'keyword=' in parameter: " + input);
-
-    /* There may not be more data: */
-    if (tk.hasMoreTokens())
-      parm_error("Too many keyword parameters: " + input);
 
     /* If the rest of the parameters do not start with '(', just pick parameter: */
     if (!rest.startsWith("(") )
     {
+      prm.raw_values.add(rest);
       prm.parms_alfa_or_num(rest, index);
       prm.parms_array_resize();
       return prm;
@@ -728,7 +767,10 @@ public class Vdb_scan
 
 
     /* Parenthesis, single parameters are done. Loop until ")": */
-    if (prm.keyword.equalsIgnoreCase("host") || prm.keyword.equals("hd"))
+    if (prm.keyword.equalsIgnoreCase("host") ||
+        prm.keyword.equalsIgnoreCase("hd")   ||
+        prm.keyword.startsWith("misc")   ||
+        prm.keyword.equalsIgnoreCase("replay"))
       tk = new StringTokenizer(rest, ",()", true);
     else
       tk = new StringTokenizer(rest, ",()-", true);
@@ -742,6 +784,16 @@ public class Vdb_scan
            (token.compareTo(",") == 0) )
         continue;
 
+      /* Some keywords do their own parsing.                                               */
+      /* The main reason for this is that this 14-year old parser is so                    */
+      /* ugly that I am stuck with not easily allowing a mix of alpha and numeric          */
+      /* parameters which started causing problems for fileselect.                         */
+      /* And ultimately I think it would be better anyway to slowly get rid of this parser.*/
+      if (prm.keyword.equals("fileselect") || "seekpct".startsWith(prm.keyword) )
+      {
+        prm.raw_values.add(token);
+        continue;
+      }
 
       /* A dash means a range.: */
       if (token.compareTo("-") == 0)
@@ -779,7 +831,6 @@ public class Vdb_scan
     return prm;
   }
 
-
   public String toString()
   {
     String txt = "Vdb_scan:";
@@ -792,6 +843,231 @@ public class Vdb_scan
       txt += " " + numerics[i];
 
     return txt;
+  }
+
+
+  /**
+   * Method to accept information like 128k, 110g, etc
+   */
+  public static long extractLong(String arg)
+  {
+    try
+    {
+      long value;
+      if (arg.endsWith("k"))
+        value = Long.parseLong(arg.substring(0, arg.length() - 1)) * 1024l;
+      else if (arg.endsWith("m"))
+        value = Long.parseLong(arg.substring(0, arg.length() - 1)) * 1024 * 1024l;
+      else if (arg.endsWith("g"))
+        value = Long.parseLong(arg.substring(0, arg.length() - 1)) * 1024 * 1024 * 1024l;
+      else if (arg.endsWith("t"))
+        value = Long.parseLong(arg.substring(0, arg.length() - 1)) * 1024 * 1024 * 1024* 1024l;
+      else
+        value = Long.parseLong(arg);
+
+      return value;
+    }
+    catch (Exception e)
+    {
+      common.ptod("Unable to extract numeric value from '%s'", arg);
+      common.failure(e);
+      return 0;
+    }
+  }
+
+
+  public static double[] extractDoubles(String arg)
+  {
+    /* Remove parenthesis if needed: */
+    if (arg.startsWith("(") && arg.endsWith(")"))
+      arg = arg.substring(1, arg.length() - 1);
+
+    String[] split = arg.split(",+");
+    double[] doubles = new double[ split.length ];
+    for (int i = 0; i < split.length; i++)
+      doubles[i] = extractDouble(split[i]);
+
+    return doubles;
+  }
+
+  public static double extractDouble(String arg)
+  {
+    try
+    {
+      double value;
+      if (arg.endsWith("k"))
+        value = Double.parseDouble(arg.substring(0, arg.length() - 1)) * 1024l;
+      else if (arg.endsWith("m"))
+        value = Double.parseDouble(arg.substring(0, arg.length() - 1)) * 1024 * 1024l;
+      else if (arg.endsWith("g"))
+        value = Double.parseDouble(arg.substring(0, arg.length() - 1)) * 1024 * 1024 * 1024l;
+      else if (arg.endsWith("t"))
+        value = Double.parseDouble(arg.substring(0, arg.length() - 1)) * 1024 * 1024 * 1024* 1024l;
+      else
+        value = Double.parseDouble(arg);
+
+      return value;
+    }
+    catch (Exception e)
+    {
+      common.ptod("Unable to extract double value from '%s'", arg);
+      common.failure(e);
+      return 0;
+    }
+  }
+
+  public static int extractInt(String arg)
+  {
+    long value = extractLong(arg);
+    if (value > Integer.MAX_VALUE)
+      common.failure("Expecting integer value, receiving something larger: " + value);
+    return(int) value;
+  }
+
+  /**
+   * This code expects a pair of keyword=xxx parameters.
+   * The first of the pair has already been interpreted by the caller, it is the
+   * second one we want.
+   *
+   * Basically, this code does the 'pair' checking and aborts if it is not a
+   * pair.
+   */
+  public static String extractpair(String arg)
+  {
+    String[] split = arg.trim().split("=+");
+    if (split.length != 2)
+      common.failure("Vdbench parameter scan: expecting a pair of variables" +
+                     " in the form of keyword=xxx: '%s'", arg);
+
+    return split[1];
+  }
+
+  /**
+   * Better? parser:
+   *
+   * dedup=(flipflop=hotsets,ratio=3.5,hotsets=(2,2,10,4))
+   *
+   * returning:
+   * flipflop=hotsets
+   * ratio=3.5
+   * hotsets=(2,2,10,4)
+   *
+   */
+  public static ArrayList <String> splitRawParms(String raw_in)
+  {
+    boolean debug   = false;
+    String  keyword = null;
+
+    if (debug)
+    {
+      common.ptod("");
+      common.ptod("raw_in: " + raw_in);
+    }
+
+    String raw = raw_in;
+    ArrayList <String> data = new ArrayList(8);
+    if (!raw.contains("="))
+      common.failure("splitRawParms: expecting '=': " + raw);
+
+    String[] split   = raw.split("=", 2);
+
+    for (String sp : split)
+      if (debug) common.ptod("split: " + sp);
+
+    if (split.length != 2)
+      common.failure("splitRawParms: invalid data: " + raw);
+
+    /* Remove the keyword from the raw input: */
+    raw = split[1];
+    if (debug) common.ptod("raw: " + raw);
+
+    /* Remove possible parenthesis at begin/end: */
+    if (raw.startsWith("(") && raw.endsWith(")"))
+      raw = raw.substring(1, raw.length() - 1);
+
+
+    /* Split into xxxx= pieces: */
+    while (raw.length() > 0)
+    {
+      if (debug) common.ptod("");
+      if (debug) common.ptod("raw1: " + raw);
+      split     = raw.split("=", 2);
+      keyword   = split[0];
+      raw       = split[1];
+      if (debug) common.ptod("keyword: " + keyword);
+      if (debug) common.ptod("raw2: " + raw);
+      int comma = raw.indexOf(",");
+      int paren = raw.indexOf("(");
+      if (debug) common.ptod("comma: " + comma);
+      if (debug) common.ptod("paren: " + paren);
+
+      /* No parenthesis: only one parameter (left): */
+      if (comma == -1 && paren == -1)
+      {
+        String tmp = keyword + "=" + split[1];
+        if (debug) common.ptod("tmp1: " + tmp);
+        data.add(tmp);
+        break;
+      }
+
+      /* Starts with an open paren: just get everything till the ending paren: */
+      else if (paren == 0)
+      {
+        if (!split[1].contains(")"))
+          common.failure("splitRawParms: Missing closing paren: " + raw);
+        String value = split[1].substring(0, split[1].indexOf(")"));
+        if (debug) common.ptod("value: " + value);
+        raw = raw.substring(raw.indexOf(value) + value.length() + 1);
+        if (debug) common.ptod("raw3: " + raw);
+
+        String tmp = keyword + "=" + value + ")";
+        if (debug) common.ptod("tmp4: " + tmp);
+        data.add(tmp);
+      }
+
+      /* A comma is BEFORE a parenthesis: go only until the comma: */
+      else if (comma < paren)
+      {
+        String value = split[1].substring(0, comma);
+        String tmp = keyword + "=" + value;
+        if (debug) common.ptod("tmp2: " + tmp);
+        data.add(tmp);
+        raw = raw.substring(comma + 1);
+      }
+
+      /* The parenthesis comes first, get stuff until the closingh paren: */
+      else if (paren < comma)
+      {
+        String value = split[1].substring(0, comma);
+        String tmp = keyword + "=" + value;
+        if (debug) common.ptod("tmp3: " + tmp);
+        data.add(tmp);
+        raw = raw.substring(comma + 1);
+      }
+
+      else
+      {
+        for (String dat : data)
+          common.ptod("dat: " + dat);
+        common.failure("splitRawParms:unknown state parsing: " + raw_in);
+      }
+
+
+      //common.ptod("split: " + split[0]);
+      //common.ptod("split: " + split[1]);
+    }
+
+    for (String dat : data)
+      if (debug) common.ptod("dat: " + dat);
+
+    return data;
+
+  }
+
+  public static void main(String[] args)
+  {
+    double tmp = Double.parseDouble(args[0]);
+    common.ptod("tmp: " + tmp);
   }
 }
 

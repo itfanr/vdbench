@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -31,11 +13,10 @@ import Utils.Format;
 /**
  * Kstat related data
  */
-public class Kstat_cpu extends VdbObject implements java.io.Serializable
+public class Kstat_cpu implements java.io.Serializable
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
-
+  private final static String c =
+  "Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.";
 
   /* This has been accumulated from kstat or windows PDH counters: */
   long cpu_count;
@@ -84,24 +65,24 @@ public class Kstat_cpu extends VdbObject implements java.io.Serializable
 
   public double user_pct()
   {
-    return ( cpu_user * 100. / cpu_total);
+    return( cpu_user * 100. / cpu_total);
   }
 
   public double kernel_pct()
   {
-    return ( cpu_kernel * 100. / cpu_total);
+    return( cpu_kernel * 100. / cpu_total);
+  }
+
+  public double getBoth()
+  {
+    return user_pct() + kernel_pct();
   }
 
   public String toString()
   {
-    String txt = "Kstat_cpu: ";
-    txt += Format.f("count:  %6d ", cpu_count );
-    txt += Format.f("total:  %6d ", cpu_total );
-    txt += Format.f("idle:   %6d ", cpu_idle  );
-    txt += Format.f("user:   %6d ", cpu_user  );
-    txt += Format.f("kernel: %6d ", cpu_kernel);
-    //txt += Format.f("wait:   %6d ", cpu_wait  );
-    txt += Format.f("hertz:  %6d ", cpu_hertz );
+    String fmt = "count: %3d total: %7d idle: %7d user: %7d kernel: %7d hertz: %7d";
+    String txt = String.format(fmt, cpu_count, cpu_total, cpu_idle, cpu_user,
+                               cpu_kernel, cpu_hertz);
 
     return txt;
   }

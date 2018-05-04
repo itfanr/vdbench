@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -33,15 +15,16 @@ import Utils.*;
 
 public class ParseFlat
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.";
 
+  private static boolean quiet          = false;
   private static String  input_file     = null;
   private static String  output_file    = "-";
   private static String  label_file     = null;
 
   private static boolean average        = false;
-  private static Vector  split_data     = new    Vector(256);
+  private static Vector  <String[]> split_data     = new    Vector(256);
   private static Vector  column_names   = new    Vector(36);
   private static Vector  filter_columns = new    Vector(36);
   private static Vector  filter_values  = new    Vector(36);
@@ -73,6 +56,8 @@ public class ParseFlat
 
     /* Now create the output file: */
     createOutput();
+
+    common.ptod("ParseFlat completed successfully.");
   }
 
   private static void readColumnHeadersAndData()
@@ -82,6 +67,9 @@ public class ParseFlat
     String line = null;
     while ((line = fg.get()) != null)
     {
+      //common.ptod("line: " + line);
+      if (line.trim().length() == 0)
+        continue;
       if (line.startsWith(" "))
       {
         /* That line contains all the proper column names in the right order: */
@@ -98,7 +86,16 @@ public class ParseFlat
       if (!line.startsWith("*"))
       {
         String[] split = line.trim().split(" +");
-        split_data.add(split);
+
+        if (split.length != column_names.size())
+        {
+          common.ptod("line: " + line);
+          common.ptod("ParseFlat: data line incomplete, expecting %d columns, line ignored.",
+                      column_names.size());
+          common.ptod("This is acceptable for the last line in the file.");
+        }
+        else
+          split_data.add(split);
       }
     }
 
@@ -150,51 +147,62 @@ public class ParseFlat
     /* Remove/keep 'avg_' line: */
     checkAverage();
 
-
     /* Go through each data line: */
     loop:
     for (int i = 0; i < split_data.size(); i++)
     {
-      String[] split = (String[]) split_data.elementAt(i);
-
-      /* Look for a match with all 'columns' and 'filters': */
-      boolean match = true;
-      for (int j = 0; j < filter_columns.size(); j++)
+      try
       {
-        String col = (String) filter_columns.elementAt(j);
-        int colno = findColumnNo(col);
-        if (!split[colno].equalsIgnoreCase((String) filter_values.elementAt(j)))
-          match = false;
-      }
 
-      /* If all the filters match, use this data: */
-      if (match)
-      {
-        txt = "";
-        for (int j = 0; j < output_cols.size(); j++)
+        String[] split = (String[]) split_data.elementAt(i);
+
+        /* Look for a match with all 'columns' and 'filters': */
+        boolean match = true;
+        for (int j = 0; j < filter_columns.size(); j++)
         {
-          String colname = (String) output_cols.elementAt(j);
-          int colno      = findColumnNo(colname);
-          String data    = split[colno];
-          if (data.equals("?"))
-            data = "0";
-
-          if (j > 0)
-            txt += ",";
-          txt += data;
-
-          /* Decide whether to use this interval: */
-          if (colname.equalsIgnoreCase("interval"))
-          {
-            if (!average && data.startsWith("avg"))
-              continue loop;
-            if (average && !data.startsWith("avg"))
-              continue loop;
-          }
+          String col = (String) filter_columns.elementAt(j);
+          int colno = findColumnNo(col);
+          if (!split[colno].equalsIgnoreCase((String) filter_values.elementAt(j)))
+            match = false;
         }
 
-        count++;
-        fp.println(txt);
+        /* If all the filters match, use this data: */
+        if (match)
+        {
+          txt = "";
+          for (int j = 0; j < output_cols.size(); j++)
+          {
+            String colname = (String) output_cols.elementAt(j);
+            int colno      = findColumnNo(colname);
+            String data    = split[colno];
+            if (data.equals("?"))
+              data = "0";
+
+            if (j > 0)
+              txt += ",";
+            txt += data;
+
+            /* Decide whether to use this interval: */
+            if (colname.equalsIgnoreCase("interval"))
+            {
+              if (!average && data.startsWith("avg"))
+                continue loop;
+              if (average && !data.startsWith("avg"))
+                continue loop;
+            }
+          }
+
+          count++;
+          fp.println(txt);
+        }
+      }
+
+      catch (Exception e)
+      {
+        for (int l = 0; l < split_data.get(i).length; l++)
+          common.ptod("Failed column: %2d: ", l, split_data.get(i)[l]);
+
+        common.failure(e);
       }
     }
 
@@ -212,7 +220,7 @@ public class ParseFlat
     {
       String[] split = (String[]) split_data.elementAt(i);
       int run = findColumnNo("run");
-      if (split[run].startsWith(RD_entry.FORMAT_RUN))
+      if (split[run].startsWith(RD_entry.FSD_FORMAT_RUN))
         split_data.removeElementAt(i--);
     }
   }
@@ -246,7 +254,7 @@ public class ParseFlat
     common.ptod("");
     common.ptod("Usage:");
     common.ptod("./vdbench parseflat -i flatfile.html -o output.csv [-c col1 col2 ..] ");
-    common.ptod("                 [-a] [-f col1 value1 col2 value2 .. ..]");
+    common.ptod("                 [-a] [-f col1 value1 col2 value2 .. ..] [-q]");
     common.ptod("");
     common.ptod("-i input flatfile, e.g. output/flatfile.html");
     common.ptod("-o output csv file name (default stdout)");
@@ -273,6 +281,8 @@ public class ParseFlat
         parms.add(arg.substring(0,2));
         parms.add(arg.substring(2));
       }
+      else if (arg.startsWith("-q"))
+        quiet = true;
       else
         parms.add(arg);
     }
@@ -280,9 +290,12 @@ public class ParseFlat
     String[] args = (String[]) parms.toArray(new String[0]);
 
     /* Print arguments: */
-    System.err.println("vdbench parseflat arguments:");
-    for (int i = 0; i < args.length; i++)
-      System.err.println("Argument " + i + ": " + args[i]);
+    if (!quiet)
+    {
+      System.err.println("vdbench parseflat arguments:");
+      for (int i = 0; i < args.length; i++)
+        System.err.println("Argument " + i + ": " + args[i]);
+    }
 
     /* Now do the parsing: */
     for (int i = 0; i < args.length; i++)
@@ -325,6 +338,10 @@ public class ParseFlat
       /* 'avg' lines? */
       else if (args[i].startsWith("-a"))
         average = true;
+
+      /* Quiet? */
+      else if (args[i].startsWith("-q"))
+        quiet = true;
 
       /* 'label' file? */
       else if (args[i].startsWith("-l"))

@@ -1,26 +1,8 @@
 package VdbComp;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -28,16 +10,17 @@ package VdbComp;
 
 import java.io.*;
 import java.util.*;
-import Utils.common;
+//import Utils.common;
 import Utils.Fget;
+import Vdb.common;
 
 /**
  * Contains data for each run
  */
 public class Run
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.";
 
   String  rd_name;
   String  flatfile_name;
@@ -78,11 +61,11 @@ public class Run
 
     /* Skip until 'loops'.                                            */
     StringTokenizer st = new StringTokenizer(run_description, " <");
-    while (!st.nextToken().equals("loops:"));
+    while (!st.nextToken().contains("loops:"));
 
     /* Starting Vdbench 5.00 there are TWO occurences of 'for loops:' */
-    if (run_description.startsWith("<"))
-      while (st.hasMoreTokens() && !st.nextToken().equals("loops:"));
+    //if (run_description.startsWith("<"))
+    //  while (st.hasMoreTokens() && !st.nextToken().contains("loops:"));
 
     /* We now have the 'forxxx=nnnn' pairs: */
     while (st.hasMoreTokens())
@@ -100,11 +83,18 @@ public class Run
       try
       {
         double number;
-        if (value.endsWith("gb"))
-          number = Double.parseDouble(value.substring(0, value.length() - 2));
+        if (value.endsWith("k"))
+          number = 1024 * Double.parseDouble(value.substring(0, value.length() - 1));
+        else if (value.endsWith("m"))
+          number = 1024 * 1024 * Double.parseDouble(value.substring(0, value.length() - 1));
+        else if (value.endsWith("g"))
+          number = 1024 * 1024 * 1024 * Double.parseDouble(value.substring(0, value.length() - 1));
+        else if (keyword.equals("iorate") && value.equals("max"))
+          number = 999988;
         else
           number = Double.parseDouble(value);
 
+        //common.ptod("keyword: " + keyword);
         forxx_values.put(keyword, new Double(number));
         all_keywords.put(keyword, keyword);
       }

@@ -1,33 +1,16 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
 
 import java.io.File;
-import java.util.Vector;
+import java.text.SimpleDateFormat;
+import java.util.*;
 
 import Utils.Format;
 
@@ -49,11 +32,26 @@ import Utils.Format;
  * - 4 bytes eye catcher
  * - 4 bytes with a count of how many 8 byte journal entries are stored.
  * n-8 byte entries with:
- *             24 bits Reserved for future use
  *              8 bits with Data Validation key of next write
  *                If key is zero it means that this journal entry describes
  *                the AFTER image of the record and the write was complete.
- *             32 bits with relative record# (lba / xfersize).
+ *              8 bits Reserved for future use
+ *             48 bits with relative record# (lba / xfersize).
+ *             Optional an extra 8 bytes (-d111): timestamp in MS.
+ *
+ *
+ * Taking a few extra bits/bytes from the reserved bits:
+ *  32 bits * 512 bytes per block =     1 TB
+ *  40 bits                       =   256 TB
+ *  48 bits                       = 65536 TB = 64PB
+ *  Actually, I don't have to worry about sign bit so I already have TWICE this.
+ *
+ *      for (int i = 8; i < 56; i+=8)
+ *      {
+ *        long result = (long) Math.pow(2, i) * 512;
+ *        common.ptod("Result: %2d %,24d %5s", i, result, FileAnchor.whatSize(result))
+ *      }
+ *
  *
  *             possible enhancement: instead of always writing a before and
  *             after journal record, flag the before entry in the record
@@ -68,20 +66,36 @@ import Utils.Format;
  * Possible enhancement: maybe every x writes, rewrite the map if there are
  * no i/o's outstanding. That makes for shorter journals.
  *
+ *
+ *
+ * 10/23/2014: attempted to translate this stuff to use NewDirectByteBuffer,
+ *             but could not get JNI to compile. Tried only Windows
+ *
+ * 10/23/2014: added -d111, allowing a timestamp to be added to each journal
+ *             entry.
+ *
+ * 01/19/2015: switching to accommodate 48 bits worth of blocks.
+ *
  */
 public class Jnl_entry
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   /* One entry per SD_entry or FileAnchor                                     */
-  private SD_entry sd = null;
+
+  private String  jnl_name;
+  private String  sd_or_fsd;
+
+
   private DV_map current_map;
   private long   jnl_handle;          /* File pointer to Journal file         */
   private long   map_handle;          /* File pointer to map file             */
   private long   jnl_offset;          /* Current journal file offset in bytes */
+
+  private String jnl_dir_name;
   private String map_file_name;       /* File name for map file (.map)        */
-  private String jnl_file_name;       /* File name for jnl file (.jnl)        */
+  public  String jnl_file_name;       /* File name for jnl file (.jnl)        */
 
   private int    jnl_array[] = new int[ 1024 / 4 ];
   private int    jnl_index   = 0;     /* Ptr next free journal entry          */
@@ -93,26 +107,45 @@ public class Jnl_entry
 
   private long   dump_journal_tod;
 
+  public  DV_map before_map = null;
+
+  private long   journal_max;
+  private HashMap <Long, Integer> pending_writes = null;
+
+  /* Note: these values can be overridden to allow for a larger journal entry */
+  /* size, containing a timestamp.                                            */
+  /* A journal created with this will have array[7] set in the MAP header.    */
+  private static boolean JOURNAL_ADD_TIMESTAMP = false;
   private static int JNL_IO_SIZE     = 512;
   private static int JNL_IO_SIZE_EOF = 1024;
-  private static int JNL_ENTSIZE     = 8; /* word0: if 0: write complete               */
-                                          /*        if 127, write failed DV_map.DV_ERROR */
-                                          /*         else: before write; new key      */
-                                          /* word1: lba / xfersize                */
+  private static int JNL_ENTSIZE     = 8;  /* word0: if 0: write complete                 */
+                                           /*        if 127, write failed DV_map.DV_ERROR */
+                                           /*         else: before write; new key         */
+                                           /* optional:                                   */
+                                           /* word1: lba / xfersize (key block#)          */
+                                           /* word2+3: System.currentTimeMilis()          */
+
+  public  static int JNL_ENT_INTS    = JNL_ENTSIZE / 4; /* Number of ints per entry */
 
   private static int MAP_HDR_SIZE    = 32; /* 32 bytes header on each map record  */
-  private static int MAP_SKIP_HDR    = 8 ;
+  public  static int MAP_SKIP_HDR    = MAP_HDR_SIZE / 4;
 
-  private static int JNL_HDR_SIZE    = 16; /* 16 bytes header on each journal record  */
-  private static int JNL_SKIP_HDR    = 4;
+  public  static int JNL_HDR_SIZE    = 16; /* 16 bytes header on each journal record  */
+  public  static int JNL_SKIP_HDR    = 4;
 
-  private static int JNL_ENTRIES     = (JNL_IO_SIZE - JNL_HDR_SIZE) / JNL_ENTSIZE;
+  public  static int JNL_ENTRIES     = (JNL_IO_SIZE - JNL_HDR_SIZE) / JNL_ENTSIZE;
   /* Number of 8-byte entries in journal rec */
 
-  private static int MAP_EYE_CATCHER = 0x48564442; /* eye catcher for map records */
-  private static int JNL_EYE_CATCHER = 0x48454e4b; /* eye catcher for jnl record  */
+  static
+  {
+    overrideConstants();
+  };
 
-  static int    RECOVERY_READ = -2;
+
+
+  public  static int MAP_EYE_CATCHER = 0x4d41502e; /* 'JNL.' for map records */
+  public  static int JNL_EYE_CATCHER = 0x4a4e4c2e; /* 'MAP.' for jnl record  */
+
   static String RECOVERY_RUN_NAME = "journal_recovery";
 
 
@@ -120,41 +153,51 @@ public class Jnl_entry
   /**
    * Create journals for an SD.
    */
-  Jnl_entry(SD_entry sd_in)
+  Jnl_entry(String name, String jnl_dir, String typ)
   {
-    sd = sd_in;
-    common.ptod("Allocating a new Journal file for sd=" + sd.sd_name);
-    if (sd.jnl_file_name != null)
+    sd_or_fsd    = typ;
+    jnl_name     = name;
+    jnl_dir_name = jnl_dir;
+
+    /* In case journal=(max=nn) is used, keep currently active i/o in a map    */
+    /* This then allows 'before' journal records to be written after the flush */
+    if ((journal_max = Validate.getMaxJournal()) != Long.MAX_VALUE)
+      pending_writes = new HashMap(1024);
+
+    common.ptod("Allocating a new Journal file for %s=%s", sd_or_fsd, jnl_name);
+    if (jnl_dir_name != null)
     {
       /* If the journal file is on a raw device the MAp file stays in default: */
-      if (isRawJournal(jnl_file_name))
+      if (isRawJournal(jnl_dir_name))
       {
-        map_file_name = sd.sd_name + ".map";
-        jnl_file_name = sd.jnl_file_name;
+        map_file_name = jnl_name + ".map";
+        jnl_file_name = jnl_dir_name;
       }
 
       else
       {
-        map_file_name = sd.jnl_file_name + File.separator + sd.sd_name + ".map";
-        jnl_file_name = sd.jnl_file_name + File.separator + sd.sd_name + ".jnl";
+        map_file_name = jnl_dir_name + File.separator + jnl_name + ".map";
+        jnl_file_name = jnl_dir_name + File.separator + jnl_name + ".jnl";
       }
     }
 
     else
     {
-      map_file_name = sd.sd_name + ".map";
-      jnl_file_name = sd.sd_name + ".jnl";
+      jnl_dir_name  = ".";
+      map_file_name = jnl_name + ".map";
+      jnl_file_name = jnl_name + ".jnl";
     }
 
     map_file_name = new File(map_file_name).getAbsolutePath();
     jnl_file_name = new File(jnl_file_name).getAbsolutePath();
 
-    jnl_native_buffer = Native.allocBuffer((long) JNL_IO_SIZE_EOF);
+    jnl_native_buffer = Native.allocBuffer(JNL_IO_SIZE_EOF);
 
     /* Delete the old files first to possibly shorten them: */
     if (!Validate.isJournalRecovery() || Validate.isJournalRecovered() )
     {
       new File(map_file_name).delete();
+      if (!isRawJournal(jnl_file_name))
       new File(jnl_file_name).delete();
     }
 
@@ -163,41 +206,16 @@ public class Jnl_entry
   }
 
 
-  /**
-   * Create journals for an FSD.
-   */
-  Jnl_entry(String jnl_file, String fsd_name)
+  public static void overrideConstants()
   {
-    common.ptod("Allocating a new Journal file for fsd=" + fsd_name);
-    if (jnl_file != null)
-    {
-      map_file_name = jnl_file + File.separator + fsd_name + ".map";
-      jnl_file_name = jnl_file + File.separator + fsd_name + ".jnl";
-    }
+    JOURNAL_ADD_TIMESTAMP = common.get_debug(common.JOURNAL_ADD_TIMESTAMP);
+    if (!JOURNAL_ADD_TIMESTAMP)
+      return;
 
-    else
-    {
-      map_file_name = fsd_name + ".map";
-      jnl_file_name = fsd_name + ".jnl";
-    }
-
-    common.ptod("Opening Journal file: " + jnl_file_name);
-    map_file_name = new File(map_file_name).getAbsolutePath();
-    jnl_file_name = new File(jnl_file_name).getAbsolutePath();
-
-    jnl_native_buffer = Native.allocBuffer((long) JNL_IO_SIZE_EOF);
-
-    /* Delete the old files first to possibly shorten them: */
-    if (!Validate.isJournalRecovery() || Validate.isJournalRecovered() )
-    {
-      new File(map_file_name).delete();
-      new File(jnl_file_name).delete();
-    }
-
-    /* Open the journal and map files here (use 'fast' access): */
-    openFiles(true);
+    JNL_ENTSIZE  = 16;
+    JNL_ENT_INTS = JNL_ENTSIZE / 4;
+    JNL_ENTRIES  = (JNL_IO_SIZE - JNL_HDR_SIZE) / JNL_ENTSIZE;
   }
-
 
   protected void finalize() throws Throwable
   {
@@ -221,11 +239,9 @@ public class Jnl_entry
 
   public static void closeAllMaps()
   {
-    DV_map[] maps = DV_map.getAllMaps();
-
-    for (int i = 0; i < maps.length; i++)
+    for (DV_map map : DV_map.getAllMaps())
     {
-      Jnl_entry jnl = maps[i].journal;
+      Jnl_entry jnl = map.journal;
       if (jnl != null)
       {
         File_handles.remove(jnl.jnl_handle);
@@ -244,6 +260,107 @@ public class Jnl_entry
 
 
   /**
+   * Insert a special RD in the beginning that takes care of all journal
+   * recoveries and the re-reading of all data.
+   *
+   * This no longer is a 'special' operation, it is just a seek=eof.
+   * This can be done because of the decision to start treating a seek=eof read
+   * workload during Data Validation as a 'why bother reading blocks that we
+   * don't know anything about' workload.
+   * See WG_task.createNormalIO()
+   */
+  public static void setupSDJournalRecoveryRun()
+  {
+    /* WD entry, one for each SD: */
+    for (int i = 0; i < Vdbmain.sd_list.size(); i++)
+    {
+      SD_entry sd = (SD_entry) Vdbmain.sd_list.elementAt(i);
+      WD_entry wd = new WD_entry();
+      Vdbmain.wd_list.add(wd);
+
+      wd.wd_name       = Jnl_entry.RECOVERY_RUN_NAME + "_" + sd.sd_name;
+      wd.wd_sd_name    = sd.sd_name;
+      wd.sd_names      = new String[] { sd.sd_name};
+      wd.setSkew(0);
+      wd.lowrange      = -1;
+      wd.highrange     = -1;
+      wd.seekpct       = -1;   //Jnl_entry.RECOVERY_READ; // Sequential until EOF */
+      wd.rhpct         = 0;
+      wd.whpct         = 0;
+      wd.readpct       = 100;
+      wd.xf_table      = new double[0];// { 513}; // see map.determineJnlRecoveryXfersize();
+    }
+
+    /* Allocate RD_entry and insert it at the front of the RD list: */
+    RD_entry rd = new RD_entry();
+    Vdbmain.rd_list.insertElementAt(rd, 0);
+
+    rd.rd_name = Jnl_entry.RECOVERY_RUN_NAME;
+    rd.setNoElapsed();
+    rd.setInterval(1);
+    rd.distribution = 2;
+    rd.iorate     = RD_entry.MAX_RATE;
+    rd.iorate_req = RD_entry.MAX_RATE;
+
+    // will we still need this? Yes, it needs to be optional
+    // common.where(8);
+    // double[] threads = new double[] { 1 };
+    // new For_loop("forthreads",  threads, rd.for_list);
+
+    /* Force single threaded recovery. If any errors show up with */
+    /* multi-threading the async reporting just becomes too ugly. */
+    // Leave asis, this may impact performance of journal recovery too much.
+    // Alternative: have user specify threads=1
+    //double[] threads = new double[] { 1 };
+    //new For_loop("forthreads",  threads, rd.for_list);
+
+    rd.wd_names = new String[ 1 ];
+    rd.wd_names[ 0 ] = Jnl_entry.RECOVERY_RUN_NAME + "*";
+  }
+
+
+
+  public static void setupFsdJournalRecoveryRun()
+  {
+    FwdEntry fwd = new FwdEntry();
+    FwdEntry.getFwdList().add(fwd);
+    fwd.fwd_name      = Jnl_entry.RECOVERY_RUN_NAME;
+    fwd.fsd_names     = new String[] { "*"};
+    fwd.setOperation(Operations.READ);
+    fwd.sequential_io = true;
+    fwd.select_random = false;
+    fwd.xfersizes     = new double[] { 128*1024};
+    fwd.threads       = 8;
+
+    /* Overrides: */
+    if (FwdEntry.recovery_fwd != null)
+    {
+      // this xfersize does not work, is overridden again.
+      fwd.xfersizes = FwdEntry.recovery_fwd.xfersizes;
+      fwd.threads   = FwdEntry.recovery_fwd.threads;
+    }
+
+    /* Allocate RD_entry and insert it at the front of the RD list: */
+    RD_entry rd = new RD_entry();
+    Vdbmain.rd_list.insertElementAt(rd, 0);
+
+    rd.rd_name      = Jnl_entry.RECOVERY_RUN_NAME;
+    rd.setNoElapsed();
+    rd.setInterval(1);
+    rd.distribution = 2;
+    rd.fwd_rate     = RD_entry.MAX_RATE;
+
+    if (RD_entry.recovery_rd != null)
+    {
+      rd.setInterval(RD_entry.recovery_rd.getInterval());
+      rd.fwd_rate = RD_entry.recovery_rd.fwd_rate;
+    }
+
+    rd.fwd_names = new String[ ] { Jnl_entry.RECOVERY_RUN_NAME} ;
+  }
+
+
+  /**
    * Open the journal and map files.
    * If needed they will be closed and re-opened to allow for faster flush
    * of journal reads and writes:
@@ -257,14 +374,17 @@ public class Jnl_entry
     /* Set the default flags. (no flags) */
     OpenFlags default_flags = null;
     if (common.onSolaris())
-      default_flags = new OpenFlags(new String[] { "o_sync"});
+      default_flags = new OpenFlags(new String[] { "o_sync"}, null);
     else if (common.onLinux())
-      default_flags = new OpenFlags(new String[] { "o_sync"});
+      default_flags = new OpenFlags(new String[] { "o_sync"}, null);
     else if (common.onWindows())
-      default_flags = new OpenFlags(new String[] { "directio"});
+      default_flags = new OpenFlags(new String[] { "directio"}, null);
+    else if (common.onAix())
+      default_flags = new OpenFlags(new String[] { "directio"}, null);
     else
       common.failure("Synchronous i/o options needed for Journaling currently " +
-                     "only known for Solaris, Linux, and Windows. Contact hv@sun.com");
+                     "only known for Solaris, Linux, AIX, and Windows. "+
+                     "Contact me at the Oracle Vdbench Forum.");
 
 
     /* Decide what the open flags should be:: */
@@ -291,6 +411,18 @@ public class Jnl_entry
     /* Save the flags: */
     open_flags = new_open_flags;
 
+/*
+
+- Journal: ????   http://man7.org/linux/man-pages/man2/open.2.html
+ The O_DIRECT flag on its own makes an effort
+              to transfer data synchronously, but does not give the
+              guarantees of the O_SYNC flag that data and necessary metadata
+              are transferred.  To guarantee synchronous I/O, O_SYNC must be
+              used in addition to O_DIRECT.  See NOTES below for further
+              discussion.
+
+*/
+
     /*                                   */
     /*                                   */
     /* open_flags == 0 means BUFFERED IO */
@@ -313,7 +445,7 @@ public class Jnl_entry
   /**
    * Dump all journal files for all SDs or FSDs.
    */
-  public static void dumpAllMaps()
+  public static void dumpAllMaps(boolean end_of_run)
   {
     if (!Validate.isJournaling())
       return;
@@ -323,60 +455,116 @@ public class Jnl_entry
       /* For file system formatting: */
       if (!SlaveWorker.work.format_run)
       {
-        log("dumpAllMaps(): request ignored due to 'DONT_DUMP_MAPS'");
+        plog("dumpAllMaps(): request ignored due to 'DONT_DUMP_MAPS'");
         return;
       }
 
-      log("dumpAllMaps(): 'DONT_DUMP_MAPS' request ignored because this is a format run");
+      plog("dumpAllMaps(): 'DONT_DUMP_MAPS' request ignored because this is a format run");
     }
 
-    DV_map[] maps = DV_map.getAllMaps();
-
-    for (int i = 0; i < maps.length; i++)
+    /* This debugging call does not make sense: skip dump but also skip setAllUnbusy? */
+    if (!SlaveWorker.work.format_run)
     {
-      Jnl_entry jnl = maps[i].journal;
-      if (jnl != null)
-        jnl.dumpOneMap(maps[i]);
+      if (end_of_run && HelpDebug.hasRequest("dumpAllMaps"))
+      {
+        plog("dumpAllMaps(): request ignored due to 'HelpDebug request'");
+        return;
+      }
+    }
+
+
+    for (DV_map map : DV_map.getAllMaps())
+    {
+      if (map.journal != null)
+      {
+        map.journal.dumpOneMap(map);
+        map.setAllUnBusy();
+      }
     }
   }
 
 
   public void dumpOneMap(DV_map map)
   {
-    /* Remember when: */
-    dump_journal_tod = System.currentTimeMillis();
+    /* Locking is needed to allow dumping after 'max_journal': */
+    synchronized (map)
+    {
+      /* Remember when: */
+      dump_journal_tod = System.currentTimeMillis();
 
-    /* Possibly re-open the files with fast read+write access: */
-    openFiles(true);
+      /* Possibly re-open the files with fast read+write access: */
+      openFiles(true);
 
-    log("Writing Data Validation map to " + jnl_file_name);
-    jnl_dump_map(jnl_handle, map);
+      /* Should this be done in reverse order, first the backup.map file */
+      /* and then .jnl in case the jnl dump fails? */
 
-    log("Writing Data Validation map to " + map_file_name);
-    jnl_dump_map(map_handle, map);
+      plog("Writing Data Validation map to " + File_handles.getFileName(jnl_handle));
+      jnl_dump_map(jnl_handle, map, jnl_file_name);
 
-    /* Possibly re-open the files with slow read+write access: */
-    openFiles(false);
+      plog("Writing Data Validation map to " + File_handles.getFileName(map_handle));
+      jnl_dump_map(map_handle, map, map_file_name);
+
+      /* Possibly re-open the files with slow read+write access: */
+      openFiles(false);
+
+      /* For the next go-around our index must start clean again: */
+      jnl_index = 0;
+    }
   }
 
 
   /**
    * Read one physical record from Journal
    */
-  private static void jnl_read(long handle, long seek, long length, long buffer) throws Exception
+  public static void jnl_read(long  handle,
+                              long  seek,
+                              long  length,
+                              long  buffer,
+                              int[] array,
+                              int   eye_catcher) throws Exception
   {
     //common.ptod("jnl_read handle: " + handle + " seek: " + seek + " buffer: " + buffer);
     long rc = Native.readFile(handle, seek, length, buffer);
     if (rc != 0)
       throw new Exception("Journal read failed: "+ Errno.xlate_errno(rc));
+    Native.buffer_to_array(array, buffer, 512);
+
+    if (array[0] != eye_catcher)
+    {
+      String fname = (String) File_handles.getFileName(handle);
+      common.ptod("Journal file lba: 0x%08x", seek);
+      if (eye_catcher == MAP_EYE_CATCHER && array[0] == JNL_EYE_CATCHER)
+        common.failure("Expecting MAP record but receiving JNL record from %s", fname);
+      if (eye_catcher == JNL_EYE_CATCHER && array[0] == MAP_EYE_CATCHER)
+        common.failure("Expecting JNL record but receiving MAP record from %s", fname);
+      if (eye_catcher == MAP_EYE_CATCHER)
+        common.failure("Expecting MAP record but receiving unknown 0x%08x record from %s", array[0], fname);
+      if (eye_catcher == JNL_EYE_CATCHER)
+        common.failure("Expecting JNL record but receiving unknown 0x%08x record from %s", array[0], fname);
+      common.failure("Receiving unknown 0x%08x record", array[0]);
+    }
   }
 
 
   /**
    * Write one physical record to journal
    */
-  private static void jnl_write(long handle, long seek, long length, long buffer)
+  public static void jnl_write(long handle, long seek, long length, long buffer)
   {
+    // debugging:
+    if (false)
+    {
+      int[] array = new int[128];
+      Native.buffer_to_array(array, buffer, 512);
+      if (array[0] == MAP_EYE_CATCHER)
+        common.ptod("Writing map record to lba 0x%08x - 0x%08x", seek, seek + length - 1);
+      else if (array[0] == JNL_EYE_CATCHER)
+        common.ptod("Writing jnl record to lba 0x%08x - 0x%08x", seek,  seek + length - 1);
+      else
+        common.ptod("Writing unknown record 0x%08x to lba 0x%08x", array[0], seek);
+      //  common.where(8);
+    }
+
     long rc = Native.writeFile(handle, seek, length, buffer);
     if (rc != 0)
       common.failure("Journal write failed: " + Errno.xlate_errno(rc));
@@ -397,6 +585,9 @@ public class Jnl_entry
    * BEFORE record and then an AFTER record it means that we can not have
    * any outstanding i/o when we do this, or re-evaluate the
    * applyJournal().
+   *
+   * //  ??? double check above!
+   *
    * Since the 'journal file too long' issue has never been brought up it
    * just does not seem worth the effort.
    * Remember, 20MB of journal file equals 20*1024*1024/(512/16) ios, or
@@ -415,7 +606,10 @@ public class Jnl_entry
     if (jnl_index < JNL_ENTRIES)
     {
       /* It turns out that each time I copy 1024bytes, not 512! */
-      Native.array_to_buffer(jnl_array, jnl_native_buffer);
+      /* It turns out that each time I copy 1024bytes, not 512! */
+      /* It turns out that each time I copy 1024bytes, not 512! */
+      /* It turns out that each time I copy 1024bytes, not 512! */
+      Native.arrayToBuffer(jnl_array, jnl_native_buffer);
       jnl_write(jnl_handle, jnl_offset, 512, jnl_native_buffer);
     }
     else
@@ -426,42 +620,17 @@ public class Jnl_entry
       jnl_array[128+2] = (int) jnl_offset / 512;
       jnl_array[128+3] = (int) dump_journal_tod;
 
-      Native.array_to_buffer(jnl_array, jnl_native_buffer);
+      Native.arrayToBuffer(jnl_array, jnl_native_buffer);
       jnl_write(jnl_handle, jnl_offset, 1024, jnl_native_buffer);
 
       jnl_offset += 512;
       jnl_index   = 0;
 
-      if (jnl_offset % (10*1024*1024) == 0)
+      if (jnl_offset % (100*1024*1024l) == 0)
         common.ptod("Journal file " + jnl_file_name + " is now " +
                     (jnl_offset / (1*1024*1024)) + "mb");
     }
   }
-
-
-  /**
-   * Write a journal entry at the start of a write
-   */
-  public synchronized void writeBeforeImage(Cmd_entry cmd)
-  {
-    if (Validate.isMapOnly())
-      return;
-
-    writeJournalEntry(cmd.dv_key, (int) (cmd.cmd_lba / cmd.cmd_xfersize), true);
-  }
-
-
-  /**
-   * Write a journal entry after the write completes
-   */
-  public synchronized void writeAfterImage(Cmd_entry cmd)
-  {
-    if (Validate.isMapOnly())
-      return;
-
-    writeJournalEntry(0, (int) (cmd.cmd_lba / cmd.cmd_xfersize), true);
-  }
-
 
   /**
    * Store a journal entry, and optionally write it out.
@@ -472,21 +641,87 @@ public class Jnl_entry
    *
    * When the key is zero it implies an AFTER image.
    */
-  public synchronized void writeJournalEntry(int key, int index, boolean last)
+  public synchronized void writeJournalEntry(int key, long key_block, boolean last)
   {
-    jnl_array [ JNL_SKIP_HDR + jnl_index*2 + 0 ] = key;
-    jnl_array [ JNL_SKIP_HDR + jnl_index*2 + 1 ] = index;
+    if (jnl_index == JNL_ENTRIES)
+      common.failure("Invalid jnl_index: " + jnl_index);
+
+    /* Note that key may have bit0 set to identify 'recursive call' from below  */
+
+    long store = ((long) key) << 56 | key_block;
+    jnl_array [ JNL_SKIP_HDR + jnl_index * JNL_ENT_INTS + 0 ] = left32(store);
+    jnl_array [ JNL_SKIP_HDR + jnl_index * JNL_ENT_INTS + 1 ] = right32(store);
+
+    if (JOURNAL_ADD_TIMESTAMP)
+    {
+      long tod = System.currentTimeMillis();
+      jnl_array [ JNL_SKIP_HDR + jnl_index * JNL_ENT_INTS + 2 ] = left32(tod);
+      jnl_array [ JNL_SKIP_HDR + jnl_index * JNL_ENT_INTS + 3 ] = right32(tod);
+    }
+
     jnl_index++;
 
     if (last || jnl_index >= JNL_ENTRIES)
       writeJournalRecord();
 
-    boolean debug = false;
-    if (debug && key != 0)
-      common.ptod("before: lba %08x key %02x", index * current_map.getBlockSize(), key);
-    if (debug && key == 0)
-      common.ptod("after:  lba %08x key %02x", index * current_map.getBlockSize(), key);
+    //if (key != 0)
+    //  common.ptod("before: lba %08x key %02x", key_block * current_map.getBlockSize(), key);
+    //else
+    //  common.ptod("after:  lba %08x key %02x", key_block * current_map.getBlockSize(), key);
 
+
+    /* Temporarily store pending i/o request for journaling.                         */
+    /*                                                                               */
+    /* When using the 'journal_max=' parameter the journal file will be flushed      */
+    /* every journal_max=xxx bytes.                                                  */
+    /*                                                                               */
+    /* Because of that the journal file will not have a record of writes that were   */
+    /* outstanding at that time. If Vdbench or the OS shuts down then with any of    */
+    /* these writes still pending a corruption may not be recognized.                */
+    /*                                                                               */
+    /* It is therefore, when journal_max is used, that we keep track of these        */
+    /* pending writes in a small HashMap, dumping that HashMap back into the journal */
+    /* the moment that the flush has completed.                                      */
+
+    /* This all still happens under the current lock.                                */
+    if (pending_writes == null || (key & 0x80000000) != 0 )
+      return;
+
+
+    /* 'Before' journal record: */
+    if (key != 0)
+    {
+      if (pending_writes.put(key_block, key) != null)
+        common.failure("Received duplicate 'i/o pending' status for block: %,d key: %d", key_block, key);
+    }
+
+    /* 'After' journal record: */
+    else
+    {
+      if (pending_writes.remove(key_block) == null)
+        common.failure("Pending write removing unknown block: %,d", key_block);
+    }
+
+    /* Optionally rewrite maps while maps are locked.           */
+    /* This eliminates the journal becoming too huge, though it */
+    /* may slow down iops while the maps are being dumped.      */
+
+    if (jnl_offset < journal_max)
+      return;
+
+    /* Note: if Vdbench or the OS shuts down HERE we may have an issue? */
+    plog("'journal_max' reached. Clearing journal file for %s", sd_or_fsd);
+    dumpOneMap(current_map);
+
+
+    /* While still under the current Jnl_entry lock, rewrite BEFORE entries: */
+    Long[] blocks = pending_writes.keySet().toArray(new Long[0]);
+    for (int i = 0; i < blocks.length; i++)
+    {
+      long    block      = blocks[i];
+      boolean last_block = (i == blocks.length - 1);
+      writeJournalEntry(pending_writes.get(block) | 0x80000000, block, last_block);
+    }
   }
 
 
@@ -500,70 +735,120 @@ public class Jnl_entry
    * we can not use this map and must go to the backup copy of the map
    * which resides in the '.map' file.
    */
-  public void jnl_dump_map(long handle, DV_map map)
+  public void jnl_dump_map(long handle, DV_map map, String label)
   {
+    Elapsed elapsed = new Elapsed("jnl_dump_map of " + label, 500*1000);
+
     /* Write control record saying "dump in progress": */
     jnl_array[0] = MAP_EYE_CATCHER;
     jnl_array[1] = -1;
-    jnl_array[2] = map.map_entries;
-    jnl_array[3] = map.getBlockSize();
-    jnl_array[4] = (int) dump_journal_tod << 32;
-    jnl_array[5] = (int) dump_journal_tod;
-    jnl_array[6] = 0;
-    jnl_array[7] = 0;
 
-    Native.array_to_buffer(jnl_array, jnl_native_buffer);
+    jnl_array[2] = left32(map.key_blocks);
+    jnl_array[3] = right32(map.key_blocks);
+
+    jnl_array[4] = map.getKeyBlockSize();
+
+    jnl_array[5] = left32(dump_journal_tod);
+    jnl_array[6] = right32(dump_journal_tod);
+
+    jnl_array[7] = (JOURNAL_ADD_TIMESTAMP) ? 1 : 0;
+    jnl_array[8] = 0;
+
+    Native.arrayToBuffer(jnl_array, jnl_native_buffer);
     jnl_write(handle, 0, 512, jnl_native_buffer);
 
-    /* Start map at 512: */
-    jnl_offset   = 512;
-    jnl_array[1] = MAP_EYE_CATCHER;
 
-    /* Mark all entries un-busy: */
-    for (int i = 0; i < map.map_entries; i++)
-      map.byte_map[i] &= 0x7f;
 
-    /* Dump the map in chunks of x integers after byte to int translation: */
-    int written = 0;
-    for (int i = 0; i < map.map_entries;)
+    /* Start a thread for each one GB of journal: */
+    ArrayList <Thread> threads = new ArrayList(8);
+    long key_blocks_per_gb = 1024*1024*1024l / 480 * 480;
+    for (long start_keyblk = 0; start_keyblk < map.key_blocks; start_keyblk += key_blocks_per_gb)
     {
-      for (int j = MAP_SKIP_HDR; j < 128 && i < map.map_entries; j++)
-      {
-        jnl_array[ j ] = ( map.byte_map[i++] << 24 ) |
-                         ( map.byte_map[i++] << 16 ) |
-                         ( map.byte_map[i++] <<  8 ) |
-                         ( map.byte_map[i++]       );
-        written+=4;
-      }
-
-      /* Write: */
-      Native.array_to_buffer(jnl_array, jnl_native_buffer);
-
-      jnl_write(handle, jnl_offset, 512, jnl_native_buffer);
-      jnl_offset += 512;
+      long  thread_blocks = Math.min(key_blocks_per_gb, (map.key_blocks - start_keyblk));
+      common.ptod("Starting JournalThread for key block %,16d to %,16d",
+                  start_keyblk, start_keyblk + thread_blocks);
+      JournalThread rest = new JournalThread(this,
+                                             map,
+                                             handle,
+                                             start_keyblk,
+                                             thread_blocks,
+                                             map.getKeyBlockSize(),
+                                             false);
+      rest.start();
+      threads.add(rest);
     }
+
+    /* Wait for them: */
+    JournalThread.waitForList(threads);
+
+    /* Set offset to the start of the journal records: */
+    jnl_offset = 512;
+    jnl_offset += (map.key_blocks + 511) / 480 * 512;
+
+    //common.ptod("jnl_offset: 0x%08x", jnl_offset);
+
 
     /* Write EOF record, meaning no journal records on file: */
     jnl_array[0] = JNL_EYE_CATCHER;
     jnl_array[1] = 0;                       // 0 means EOF
     jnl_array[2] = (int) jnl_offset / 512;
-    jnl_array[3] = (int) dump_journal_tod;  // last 32 bits of tod.
-    Native.array_to_buffer(jnl_array, jnl_native_buffer);
+    jnl_array[3] = right32(dump_journal_tod);
+    Native.arrayToBuffer(jnl_array, jnl_native_buffer);
     jnl_write(handle, jnl_offset, 512, jnl_native_buffer);
 
     /* Write control record again, now saying "dump completed": */
     jnl_array[0] = MAP_EYE_CATCHER;
     jnl_array[1] = MAP_EYE_CATCHER;
-    jnl_array[2] = map.map_entries;
-    jnl_array[3] = map.getBlockSize();
-    jnl_array[4] = (int) dump_journal_tod << 32;
-    jnl_array[5] = (int) dump_journal_tod;
-    jnl_array[6] = 0;
-    jnl_array[7] = 0;
 
-    Native.array_to_buffer(jnl_array, jnl_native_buffer);
+    jnl_array[2] = left32(map.key_blocks);
+    jnl_array[3] = right32(map.key_blocks);
+
+    jnl_array[4] = map.getKeyBlockSize();
+
+    jnl_array[5] = left32(dump_journal_tod);
+    jnl_array[6] = right32(dump_journal_tod);
+
+    jnl_array[7] = (JOURNAL_ADD_TIMESTAMP) ? 1 : 0;
+    jnl_array[8] = 0;
+
+    Native.arrayToBuffer(jnl_array, jnl_native_buffer);
     jnl_write(handle, 0, 512, jnl_native_buffer);
+
+    elapsed.end(5);
   }
+
+
+  /**
+   * Some methods to assist with 4-8 bit manipulation, including the pain with
+   * the sign bit of the right-most 32 bits.
+   */
+  private static int left32(long long_value)
+  {
+    return(int) (long_value >>> 32);
+  }
+  private static int right32(long long_value)
+  {
+    return(int) long_value;
+  }
+  private static long not_used_make64Key(long key, int left, int right)
+  {
+    return make64(left, right) | (key << 56);
+  }
+  public  static long make64(int left, int right)
+  {
+    long long_value = ((long) left) << 32;
+    long_value     |= ((long) right) &0xffffffffL;
+    return long_value;
+  }
+  public static int getKey(long long_value)
+  {
+    return(int) ((long_value >> 56) & 0xff);
+  }
+  public static long getBlock(long long_value)
+  {
+    return long_value & 0xffffffffffffL;
+  }
+
 
 
   /**
@@ -571,13 +856,14 @@ public class Jnl_entry
    * Layout: first sector: controlinfo
    *         rest: all data from map
    */
-  public DV_map RestoreMap(long handle, String name, long max_lba, String lun)
+  private DV_map restoreMap(String jnl_dir_name, long handle, String name, long max_lba, String lun)
   {
+    Elapsed elapsed = new Elapsed("DV_map.restoreMap of " + name, 500*1000);
+
     /* Read controlinfo: */
     try
     {
-      jnl_read(handle, 0, 512, jnl_native_buffer);
-      Native.buffer_to_array(jnl_array, jnl_native_buffer, 512);
+      jnl_read(handle, 0, 512, jnl_native_buffer, jnl_array, MAP_EYE_CATCHER);
     }
     catch (Exception e)
     {
@@ -587,8 +873,8 @@ public class Jnl_entry
     }
 
     /* Get map length and xfersize: */
-    int mapentries  = jnl_array[2];
-    int mapxfersize = jnl_array[3];
+    long key_blocks  = make64(jnl_array[2], jnl_array[3]);
+    int  key_blksize = jnl_array[4];
 
     /* First word must always have eye catcher: */
     if (jnl_array[0] != MAP_EYE_CATCHER)
@@ -603,85 +889,65 @@ public class Jnl_entry
     if (jnl_array[1] != MAP_EYE_CATCHER)
       return null;
 
+    /* Determine if the journal entries contain a timestamp: */
+    if (jnl_array[7] == 1)
+    {
+      common.set_debug(common.JOURNAL_ADD_TIMESTAMP);
+      overrideConstants();
+    }
+
     /* Compare length: */
-    if (max_lba / mapxfersize != mapentries)
+    if (max_lba / key_blksize != key_blocks)
     {
       String msg = name + " Journal recovery failed. \nJournal contains xfersize " +
-                   mapxfersize + " and contains " + mapentries + " blocks, " +
-                   "for a total size of " + (long) mapentries * mapxfersize + " bytes." +
+                   key_blksize + " and contains " + key_blocks + " blocks, " +
+                   "for a total size of " + (long) key_blocks * key_blksize + " bytes." +
                    "\nThis does not match the size of " + lun + " which is " +
                    max_lba + " bytes";
 
-      SlaveJvm.sendMessageToConsole(msg);
+      ErrorLog.ptod(msg);
       common.failure("Journal recovery failed");
     }
 
     /* We now have blocksize and length, so allocate map: */
-    DV_map map = DV_map.allocateMap(name, max_lba, mapxfersize);
+    DV_map map = DV_map.allocateMap(jnl_dir_name, name, max_lba, key_blksize);
     storeMap(map);
     map.journal = this;
 
     /* The map size can be wrong if we did not know the proper size */
-    /* during alloation:                                            */
-    if (map.byte_map.length != mapentries)
+    /* during allocation:                                           */
+    //if (current_map.map_entries != mapentries)
+    //  current_map.reallocateByteMap(mapentries);
+    //DV_map map = current_map;
+
+
+
+    /* Start a thread for each one GB of journal: */
+    ArrayList <Thread> threads = new ArrayList(8);
+    long key_blocks_per_gb = 1024*1024*1024l / 480 * 480;
+    for (long start_keyblk = 0; start_keyblk < key_blocks; start_keyblk += key_blocks_per_gb)
     {
-      map.byte_map = null;
-      map.byte_map = new byte[(mapentries + 3) & ~3];
+      long  thread_blocks = Math.min(key_blocks_per_gb, (key_blocks - start_keyblk));
+      common.ptod("Starting JournalThread for key block %,16d to %,16d",
+                  start_keyblk, start_keyblk + thread_blocks);
+      JournalThread rest = new JournalThread(this,
+                                             map,
+                                             handle,
+                                             start_keyblk,
+                                             thread_blocks,
+                                             key_blksize,
+                                             true);
+      rest.start();
+      threads.add(rest);
     }
 
+    /* Wait for them: */
+    JournalThread.waitForList(threads);
 
-    /* Start reading map at 512: */
+
+    /* Set offset to the start of the journal records: */
     jnl_offset = 512;
-
-    /* Read the map in chunks of x integers and do int to byte translation: */
-    int restcnt = 0;
-    for (int i = 0; i < mapentries;)
-    {
-      /* Read: */
-      try
-      {
-        jnl_read(handle, jnl_offset, 512, jnl_native_buffer);
-        Native.buffer_to_array(jnl_array, jnl_native_buffer, 512);
-      }
-      catch (Exception e)
-      {
-        common.ptod("Error while restoring the journal map. Journal likely is corrupted");
-        common.ptod(e);
-        common.failure(e);
-      }
-
-      for (int j = MAP_SKIP_HDR; j < 128 && i < mapentries; j++)
-      {
-        map.byte_map[ i++ ] = (byte) (jnl_array[ j ] >> 24);
-        map.byte_map[ i++ ] = (byte) (jnl_array[ j ] >> 16);
-        map.byte_map[ i++ ] = (byte) (jnl_array[ j ] >>  8);
-        map.byte_map[ i++ ] = (byte) (jnl_array[ j ]);
-
-        if (map.byte_map[ i - 4] != 0) restcnt++;
-        if (map.byte_map[ i - 3] != 0) restcnt++;
-        if (map.byte_map[ i - 2] != 0) restcnt++;
-        if (map.byte_map[ i - 1] != 0) restcnt++;
-      }
-
-      jnl_offset += 512;
-    }
-
-
-    /* Warn users (and yourself since you keep forgetting): */
-    int bad_blocks_found = 0;
-    for (long i = 0; i < mapentries; i++)
-    {
-      int key = map.dv_get(i * map.getBlockSize());
-      if (key == DV_map.DV_ERROR)
-        bad_blocks_found++;
-    }
-
-    log("Journal restored for " + name + "; " + "SD contains " + restcnt + " modified blocks.");
-    if (bad_blocks_found > 0)
-      log(String.format("Blocks found in journal that are in error: %d. "+
-                        "They will NOT be re-verified.", bad_blocks_found));
-
-    map.setBlockSize(mapxfersize);
+    jnl_offset += (key_blocks + 511) / 480 * 512;
 
     return map;
   }
@@ -690,6 +956,8 @@ public class Jnl_entry
 
   /**
    * Recover the Data Validation maps using journals.
+   *
+   * This is called on the slave.
    */
   public static void recoverSDJournalsIfNeeded(Vector sd_list)
   {
@@ -701,14 +969,20 @@ public class Jnl_entry
       SD_entry sd = (SD_entry) sd_list.elementAt(i);
       if (!sd.journal_recovery_complete)
       {
-        Jnl_entry journal = new Jnl_entry(sd);
-        DV_map map = journal.recoverOneMap(sd.sd_name, sd.end_lba, sd.lun);
+        Jnl_entry journal = new Jnl_entry(sd.sd_name, sd.jnl_dir_name, "sd");
+        DV_map    map     = journal.recoverOneMap(sd.jnl_dir_name, sd.sd_name, sd.end_lba, sd.lun);
+
+        int xfersize = map.determineJnlRecoveryXfersize(sd.getMaxSdXfersize());
+        sd.trackSdXfersizes(new double[] { xfersize});
 
         /* The WG_entry that is requesting this recovery does not have a valid */
-        /* xfersize yet: store the xfersize you received from the journal: */
-        sd.wg_for_sd.xfersize          = map.getBlockSize();
-        sd.wg_for_sd.mcontext.seek_low = map.getBlockSize();
+        /* xfersize yet: store the xfersize you received from the journal:     */
+        sd.wg_for_sd.setXfersizes(new double[] { xfersize});
         sd.wg_for_sd.mcontext.next_seq = -1;
+        if (sd.canWeUseBlockZero())
+          sd.wg_for_sd.mcontext.seek_low = 0;
+        else
+          sd.wg_for_sd.mcontext.seek_low = map.getKeyBlockSize();
       }
     }
   }
@@ -717,10 +991,9 @@ public class Jnl_entry
   /**
    * Recover the Data Validation maps using journals
    */
-  public DV_map recoverOneMap(String name, long max_lba, String lun)
+  public DV_map recoverOneMap(String jnl_dir_name, String sd_or_fsd_name, long max_lba, String lun)
   {
-    SlaveJvm.sendMessageToConsole("Starting journal recovery for " + name);
-    log("Starting journal recovery for " + name);
+    ErrorLog.ptod("Starting journal recovery for " + sd_or_fsd_name);
 
     /* See if journal files are present (abort if not): */
     if (!isRawJournal(jnl_file_name))
@@ -735,22 +1008,23 @@ public class Jnl_entry
 
 
     /* Restore map from journal file: */
-    log("Restoring Data Validation map from: " + jnl_file_name);
-    DV_map map = RestoreMap(jnl_handle, name, max_lba, lun);
+    plog("Restoring Data Validation map from: " + jnl_file_name);
+    DV_map map = restoreMap(jnl_dir_name, jnl_handle, sd_or_fsd_name, max_lba, lun);
 
     /* A bad return code tells me that the map in the journal file was in */
     /* the middle of a map write that did not complete:                   */
     if (map == null)
     {
       /* Recover from mapfile: */
-      log("Restoring Data Validation map from: " + map_file_name);
-      map = RestoreMap(map_handle, name, max_lba, lun);
+      plog("The last map dump to %s failed. Falling back to backup ", jnl_file_name);
+      plog("Restoring Data Validation map from: " + map_file_name);
+      map = restoreMap(jnl_dir_name, map_handle, sd_or_fsd_name, max_lba, lun);
       if (map == null)
         common.failure("Invalid journal map file ");
     }
 
     /* Apply journal changes to map: */
-    applyJournal();
+    applyJournal(jnl_dir_name);
 
     /* Now write the map back to the files: */
     //common.ptod("Writing recovered Data Validation map to " + jnl_filename(sd, ".jnl"));
@@ -758,8 +1032,7 @@ public class Jnl_entry
     //common.ptod("Writing recovered Data Validation map to " + jnl_filename(sd, ".map"));
     //jnl.jnl_dump_map(jnl.jnl_map_fhandle, sd.dv);
 
-    SlaveJvm.sendMessageToConsole("Completed journal recovery for " + name);
-    log("Completed journal recovery for " + name);
+    ErrorLog.ptod("Completed journal recovery for %s. Starting data validation.", sd_or_fsd_name);
 
     return map;
   }
@@ -774,42 +1047,73 @@ public class Jnl_entry
   /**
    * Apply journals to a just read Data Validation map.
    */
-  private void applyJournal()
+  private void applyJournal(String jnl_dir_name)
   {
-    boolean debug = false;
-    long before = 0;
-    long after = 0;
-    long lba;
-    int  newkey;
+    boolean debug   = false;
+    long    before  = 0;
+    long    after   = 0;
+    long    lba;
+    int     newkey;
+
+    Elapsed elapsed = new Elapsed("applyJournal", 100*1000*1000);
 
     /* 'before_map' contains the BEFORE key value of keys that have been      */
     /* found in a 'before' record but are still waiting for an 'after' record: */
     /* 'current_map' is the map we're now restoring to. */
-    DV_map before_map = new DV_map(current_map.map_name,
-                                   current_map.map_entries,
-                                   current_map.getBlockSize());
+    before_map = new DV_map(jnl_dir_name,
+                            current_map.map_name + ".before",
+                            current_map.key_blocks,
+                            current_map.getKeyBlockSize());
+
     /* In case this is for an FSD, pass the anchor: */
     before_map.recovery_anchor = this.recovery_anchor;
 
-    common.ptod("Applying journal records from " + map_file_name);
+    ErrorLog.plog("Applying journal records from " + jnl_file_name);
+
+    /**
+     * The ultimate result of this loop is that 'before_map' will contain a
+     * non-zero key for each write that we did not see an 'after' journal
+     * record for, and that 'current_map' will contain the key of the writes
+     * that we DID receive an 'after' journal record for.
+     *
+     * 'before_map' will contain DV_error for each block that we know of had
+     * never been written before, this from 'current_map' having key=0.
+     */
 
     while (true)
     {
-      jnl_read_next_record();
+      if (debug) common.ptod("jnl_offset: %,16d", jnl_offset);
+      jnl_read_next_record(jnl_offset);
+      jnl_offset += 512;
+
+      elapsed.track(480);
 
       /* Pick up the amount of entries I have in these 512 bytes: */
-      int entries = jnl_array[1];
+      int blocks_in_record = jnl_array[1];
+      if (debug) common.ptod("blocks_in_record: " + blocks_in_record);
 
       /* Scan through all those entries: */
-      for (int i = 0; i < entries; i++)
+      for (int i = 0; i < blocks_in_record; i++)
       {
-        newkey =        jnl_array[ JNL_SKIP_HDR + i*2 + 0 ] & 0xff;
-        lba    = (long) jnl_array[ JNL_SKIP_HDR + i*2 + 1 ] * current_map.getBlockSize();
+        long long_value = make64(jnl_array[ JNL_SKIP_HDR + i * JNL_ENT_INTS + 0 ],
+                                 jnl_array[ JNL_SKIP_HDR + i * JNL_ENT_INTS + 1 ]);
 
+        newkey = getKey(long_value);
+        lba    = getBlock(long_value) * current_map.getKeyBlockSize();
+
+        if (debug) common.ptod("newkey: %02x", newkey);
+
+        //debug = true;
         if (debug && newkey != 0)
           common.ptod("before: lba %08x key %02x", lba, newkey);
         if (debug && newkey == 0)
           common.ptod("after:  lba %08x key %02x", lba, newkey);
+        //debug = false;
+
+
+        // There is an opportunity here to tighten up the code:
+        // compare NEW key with previous one. If 5 goes to 4 we have a problem!
+
 
         /* A nonzero key indicates this is a 'before' journal entry: */
         if (newkey != 0)
@@ -817,88 +1121,120 @@ public class Jnl_entry
           before++;
 
           /* The BEFORE map may not contain this block as pending: */
-          if (before_map.dv_get(lba) != 0)
+          if (before_map.dv_get_nolock(lba) != 0)
           {
-            common.ptod("lba: %08x", lba);
+            common.ptod("lba:                    %08x", lba);
             common.ptod("before_map.dv_get(lba): " + before_map.dv_get(lba));
-            common.ptod("newkey: " + newkey);
+            common.ptod("newkey:                 " + newkey);
             common.failure("Journal recovery: unmatched pending 'before' record found.");
           }
 
           /* If the old key was zero, block never written, save that status: */
-          if (current_map.dv_get(lba) == 0)
+          if (current_map.dv_get_nolock(lba) == 0)
           {
-            if (debug) common.ptod("old key 0, before_map set to 127. lba: %08x", lba);
-            before_map.dv_set(lba, DV_map.DV_ERROR);
+            if (debug) common.ptod("old key 0, before_map set to pending. lba: %08x", lba);
+            before_map.dv_set_nolock(lba, DV_map.PENDING_KEY_0);
 
             /* The new key then must be '1': */
             if (newkey != 1)
               common.failure("Expecting DV key 1 for lba %08x", lba);
           }
 
-          /* 'before_map' now will contain the 'before' key value: */
+          /* If the old key was 126, rolling over from 126 to 1: */
+          else if (current_map.dv_get_nolock(lba) == 126)
+          {
+            if (debug) common.ptod("old key 0, before_map set to pending. lba: %08x", lba);
+            before_map.dv_set_nolock(lba, DV_map.PENDING_KEY_ROLL);
+
+            /* The new key then must be '1': */
+            if (newkey != 1)
+              common.failure("Expecting DV key 1 for lba %08x", lba);
+          }
+
+          /* With Dedup we roll over from 2 to 1 for duplicate blocks: */
+          else if (current_map.dv_get_nolock(lba) == 2 && newkey == 1)
+          {
+            if (!Dedup.isDedup())
+              common.failure("Out of sync data validation key found in journal");
+
+            if (debug) common.ptod("old key 0, before_map set to pending. lba: %08x", lba);
+            before_map.dv_set_nolock(lba, DV_map.PENDING_KEY_ROLL_DEDUP);
+          }
+
+          /* 'before_map' now will contain a 'pending' flag: */
           else
           {
-            if (debug) common.ptod("old key 0x%02x lba: %08x", current_map.dv_get(lba), lba);
-            before_map.dv_set(lba, current_map.dv_get(lba));
+            if (debug) common.ptod("old key 0x%02x lba: %08x", current_map.dv_get_nolock(lba), lba);
+            before_map.dv_set_nolock(lba, DV_map.PENDING_WRITE);
           }
 
           /* 'current_map' now contains the 'after' key value. */
-          current_map.dv_set(lba, newkey);
+          current_map.dv_set_nolock(lba, newkey);
           if (debug) common.ptod("set current key 0x%02x lba: %08x", newkey, lba);
         }
 
+
+        /* This is the 'after' entry, clear the saved 'before' flag: */
         else
         {
-          /* This is the 'after' entry, clear the saved 'before' key: */
           after++;
-          before_map.dv_set(lba, 0);
+          before_map.dv_set_nolock(lba, 0);
           if (debug) common.ptod("Reset before map lba: %08x", lba);
         }
       }
 
       /* If the record was not full, EOF: */
-      if (entries < JNL_ENTRIES)
+      if (blocks_in_record < JNL_ENTRIES)
         break;
     }
 
-    /* After this, the before_map table contains all entries that were */
-    /* in progress, and MAY have either a before or after key value.   */
-    if (sd != null)
-    {
-      /* Create an array with the pending blocks: */
-      VerifyPending.findPendingBlocks(before_map, current_map, sd);
+    elapsed.end(5);
 
-      /* Now check the contents of those blocks: */
-      VerifyPending.checkSdPendingBlocks(before_map, current_map, sd);
-    }
-
-    else
-    {
-      /* Create an array with the pending blocks: */
-      VerifyPending.findPendingBlocks(before_map, current_map, sd);
-
-      /* Now check the contents of those blocks: */
-      VerifyPending.checkFsdPendingBlocks(this.recovery_anchor, before_map, current_map);
-    }
-
-    log("Completed apply of journal records (before/after): " + before + "/" + after);
+    plog("Completed apply of journal records (before/after): " + before + "/" + after);
     if (after > before)
       common.failure("Unexpected before/after count. 'After' may not be greater than 'before'");
+
+
+    /* After this, the before_map table contains all entries that were */
+    /* in progress, and MAY have either a before or after key value.   */
+    /* These blocks will be read and verified at the beginning of      */
+    /* the journal_recovery seek=eof read                              */
+    if (before + after > 0)
+    {
+      if (sd_or_fsd.equals("sd"))
+      {
+        /* Create an array with the pending blocks: */
+        VerifyPending.findPendingBlocks(before_map, current_map, sd_or_fsd, jnl_name);
+      }
+
+      else
+      {
+        // there is something wrong here: there is no SD....
+        /* Create an array with the pending blocks: */
+        VerifyPending.findPendingBlocks(before_map, current_map, sd_or_fsd, jnl_name);
+
+        /* Now check the contents of those blocks: */
+        VerifyPending.checkFsdPendingBlocks(this.recovery_anchor, before_map);
+      }
+    }
+
+
+    /* The journal recovery is complete. Delete the temporary mmap file */
+    // must be done much later!!!!
+    //common.where();
+    //before_map.deleteByteMapFile();
   }
 
 
 
   /**
-   * Read next sequential record from the journal file
+   * Read next sequential journal record from the journal file
    */
-  private void jnl_read_next_record()
+  private void jnl_read_next_record(long offset)
   {
     try
     {
-      jnl_read(jnl_handle, jnl_offset, 512, jnl_native_buffer);
-      Native.buffer_to_array(jnl_array, jnl_native_buffer, 512);
-      jnl_offset += 512;
+      jnl_read(jnl_handle, offset, 512, jnl_native_buffer, jnl_array, JNL_EYE_CATCHER);
     }
     catch (Exception e)
     {
@@ -912,65 +1248,123 @@ public class Jnl_entry
   }
 
 
-  private static void log(String txt)
-  {
-    String rd = "rd=" + SlaveWorker.work.work_rd_name;
-    ErrorLog.sendMessageToLog(rd + ": " + txt);
-  }
 
-  private static void log(String format, Object ... args)
+  public static void plog(String format, Object ... args)
   {
-    log(String.format(format, args));
+    ErrorLog.plog(String.format(format, args));
   }
 
   public static void main(String args[])
   {
+    long    saved_journal_tod = 0;
+    boolean found_jnl         = false;
+    long    map_lba           = 0;
+    long    tod_counts        = 0;
+
+    SimpleDateFormat df = new SimpleDateFormat( "MM/dd/yyyy HH:mm:ss.SSS zzz" );
+
     for (int x = 0; x < args.length; x++)
     {
       long buffer = Native.allocBuffer(512);
       int[] array = new int[128];
 
       common.ptod("args[x]: " + args[x]);
-      long handle = Native.openFile(args[x], 0);
-      int xfersize = -1;
-      long seek = 0;
-      int block = 0;
-      int records = 0;
-      int after_eof = 0;
-      boolean eof = false;
-      for (int i = 0; i < 99999 ; i++)
+      long    handle    = Native.openFile(args[x], 0);
+      long    jnl_size  = new File(args[x]).length();
+      long    xfersize  = -1;
+      long    seek      = 0;
+      int     block     = 0;
+      int     records   = 0;
+      int     after_eof = 0;
+      boolean eof       = false;
+      for (long i = 0; i < Long.MAX_VALUE ; i++)
       {
-        long rc = Native.readFile(handle, seek, 512, buffer);
-        Native.buffer_to_array(array, buffer, 512);
-        if (rc != 0)
+        if (seek >= jnl_size)
+        {
+          common.ptod("Trying to go beyond journal file size");
+          break;
+        }
+        if (Native.readFile(handle, seek, 512, buffer) != 0)
         {
           common.ptod("read error");
           break;
         }
+        Native.buffer_to_array(array, buffer, 512);
 
-        /* Ignore the map itself: */
-        if (array[0] == 0x48564442)
+
+        /* This is the MAP: */
+        if (array[0] == MAP_EYE_CATCHER)
         {
+          /* Determine if the journale entries contain a timestamp: */
+          if (array[7] == 1)
+          {
+            common.set_debug(common.JOURNAL_ADD_TIMESTAMP);
+            overrideConstants();
+          }
+
+
+          /* The first map record, print info: */
+          if (i == 0)
+          {
+            long tod = (long) array[4] << 32;
+            tod += array[5];
+            saved_journal_tod = array[5];
+            common.ptod("dump_journal_tod: %016x %s", tod, new Date(tod));
+            common.ptod("saved_journal_tod: %08x", saved_journal_tod);
+          }
+
+          /* Store the map's (key) xfersize: */
           if (xfersize < 0)
-            xfersize = array[3];
+            xfersize = array[4];
           seek += 512;
+
+          /* Scan through the map looking for certain lbas: */
+          //   for (int j = MAP_SKIP_HDR; j < 128; j++)
+          //   {
+          //     int word = array[j];
+          //     for (int z = 0; z < 4; z++)
+          //     {
+          //       int key  = word << (z*8) >> 24;
+          //       if (map_lba == 0x1122aa0000l)
+          //         common.ptod("map_lba: %012x %12d key: %2d word: %08x tod: %08x",
+          //                     map_lba, map_lba, key, word, array[5]);
+          //       map_lba += xfersize;
+          //     }
+          //   }
+
           continue;
         }
 
-        int entries = array[1] / 2;
+        /* This is the journal portion: */
+        if (array[0] == JNL_EYE_CATCHER && !found_jnl)
+        {
+          found_jnl = true;
+          common.ptod("Start of JNL records: %012x", seek);
+        }
+
+
+
+        /* Translate all journal entries in this record: */
+        int entries = array[1];
+        if (entries == 0)
+          break;
         for (int j = 0; j < entries; j++)
         {
-          records++;
-          int key  = array[ 2 + (j*2) ];
-          long lba = array[ 3 + (j*2) ] * xfersize;
+          int  key = array[ JNL_SKIP_HDR + (j*JNL_ENT_INTS) + 0 ] >>> 56;
+          long lba = array[ JNL_SKIP_HDR + (j*JNL_ENT_INTS) + 1 ] * xfersize;
 
-          if (false)
+          if (JOURNAL_ADD_TIMESTAMP)
           {
+            long tod = make64(array[ JNL_SKIP_HDR + (j*JNL_ENT_INTS) + 2 ],
+                              array[ JNL_SKIP_HDR + (j*JNL_ENT_INTS) + 3 ]);
+            String date = df.format(new Date(tod));
+
             if (key != 0)
-              common.ptod("before: key: %2d %02x lba: %08x %2d", key, key, lba, j);
+              common.ptod("before: key: 0x%02x lba: %012x tod: %s", key, lba, date);
             else
-              common.ptod("after:  key: %2d %02x lba: %08x %2d", key, key, lba, j);
+              common.ptod("after:            lba: %012x tod: %s", lba, date);
           }
+          records++;
 
           if (eof)
           {
@@ -978,16 +1372,21 @@ public class Jnl_entry
           }
         }
 
-        if (entries != 63)
+        if (entries != JNL_ENTRIES)
         {
           if (records != 0)
-            common.ptod("Found EOF after %d journal records at seek: %08x ", records, seek);
+            common.ptod("Found EOF after %6d journal records at seek: %08x ", records, seek);
           records = 0;
           eof = true;
+
+          common.ptod("Found EOF after %6d journal records at seek: %08x ", records, seek);
         }
+
         seek += 512;
       }
       common.ptod("after_eof: " + after_eof);
+      common.ptod("map_lba: " + map_lba);
+      common.ptod("map_lba: " + map_lba * 4096);
 
       Native.closeFile(handle);
     }

@@ -1,26 +1,8 @@
 package VdbComp;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -38,29 +20,19 @@ import Utils.Format;
  */
 public class Delta extends JTextField
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved.";
 
   double limit;
   String range_label;
   Color  color;
 
 
-  private static Delta[] deltas = new Delta[]
-  {
-    new Delta(+4.,  new Color( 51,  153, 0   )),
-    new Delta(+3.,  new Color( 102, 204, 0   )),
-    new Delta(+2.,  new Color( 153, 255, 0   )),
-    new Delta(+1.,  new Color( 204, 255, 51  )),
-    new Delta(0.,   new Color( 255, 255, 255 )),
-    new Delta(-1.,  new Color( 255, 255, 0   )),
-    new Delta(-2.,  new Color( 255, 204, 0   )),
-    new Delta(-3.,  new Color( 255, 153, 0   )),
-    new Delta(-4.,  new Color( 255, 0,   0   ))
-  };
+  private static Delta[] deltas = null;
 
   static
   {
+    setDefaults();
     createLabels();
   };
 
@@ -68,6 +40,9 @@ public class Delta extends JTextField
 
 
 
+  public Delta()
+  {
+  }
 
   public Delta(double limit, Color color)
   {
@@ -82,10 +57,27 @@ public class Delta extends JTextField
   }
 
 
+  public static void setDefaults()
+  {
+    if (deltas == null)
+    {
+      deltas    = new Delta[9];
+      deltas[0] = new Delta(+4.,  new Color( 51,  153, 0   ));
+      deltas[1] = new Delta(+3.,  new Color( 102, 204, 0   ));
+      deltas[2] = new Delta(+2.,  new Color( 153, 255, 0   ));
+      deltas[3] = new Delta(+1.,  new Color( 204, 255, 51  ));
+      deltas[4] = new Delta(0.,   new Color( 255, 255, 255 ));
+      deltas[5] = new Delta(-1.,  new Color( 255, 255, 0   ));
+      deltas[6] = new Delta(-2.,  new Color( 255, 204, 0   ));
+      deltas[7] = new Delta(-3.,  new Color( 255, 153, 0   ));
+      deltas[8] = new Delta(-4.,  new Color( 255, 0,   0   ));
+    }
+  };
+
   /**
    * Use the range limits to create printable labels.
    */
-  private static void createLabels()
+  public static void createLabels()
   {
     for (int i = 0; i < deltas.length; i++)
     {

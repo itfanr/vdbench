@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -57,13 +39,11 @@ import Utils.Getopt;
 
 public class Devxlate
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
-  String fullname;             /* from ls command                             */
-  long   major;                /* from ls command                             */
-  long   minor;                /* from ls command                             */
-  String instance;             /* From libdevinfo                             */
+  String fullname;   /* from iostat -xdn                             */
+  String instance;   /* From iostat -xd                              */
   String special;              /* From mnttab                                 */
   long   kstat_pointer;
   DevicePieces dev_pieces = null;
@@ -71,6 +51,9 @@ public class Devxlate
   int    seqno;
 
   boolean kstat_active;        /* Device used in this run?                    */
+
+  private static String   last_zpool_checked = "never_used_yet";
+  private static String[] zfs_stdout = null;
 
   private static String cols[] = new String[40];
   private static int    col = 0;
@@ -180,8 +163,7 @@ public class Devxlate
     if (mnttab == null)
       readAndSortMnttab();
 
-    if (debug) common.ptod("get_mnttab fname: " + fname);
-    if (debug) common.ptod("get_mnttab use_mount_point: " + use_mount_point);
+    if (debug) common.ptod("get_mnttab fname: %s use_mount_point: %b", fname, use_mount_point);
 
     for (int i = 0; i < mnttab.size(); i++)
     {
@@ -215,8 +197,11 @@ public class Devxlate
       if (!use_mount_point && mount_point.length() <= 1)
         continue;
 
-      if (debug) common.ptod("fname.startsWith(mount_point + /): " + fname.startsWith(mount_point + "/"));
-      if (fname.startsWith(mount_point + "/"))
+      /* For some reason 'fname' gets translated to lowercase when doing   */
+      /* rebuildNativePointers(). This below works around a case mismatch: */
+      boolean starts = fname.toLowerCase().startsWith(mount_point.toLowerCase() + "/");
+      if (debug) common.ptod("startsWith: " + starts);
+      if (starts)
       {
         if (fstype.compareTo("nfs") == 0 ||
             fstype.compareTo("ufs") == 0 ||
@@ -225,6 +210,7 @@ public class Devxlate
             fstype.compareTo("samfs") == 0)
         {
 
+          if (debug) common.ptod("line: " + line);
           st = new StringTokenizer(options, " ,");
           while (st.hasMoreTokens())
           {
@@ -237,9 +223,9 @@ public class Devxlate
 
               if (debug)
               {
-                common.ptod("mount_point: " + mount_point);
                 common.ptod("get_mnttab: fname: " + fname +
-                            " instance " + instance +
+                            " mountpoint: " + mount_point +
+                            " instance: " + instance +
                             " special: " + special +
                             " fstype: "  + fstype);
               }
@@ -414,8 +400,6 @@ public class Devxlate
   public static void getDeviceLookupData()
   {
     int i;
-    long starttm = System.currentTimeMillis();
-
 
     /* Get strings with all 'ssdxx ssdxx,g major minor' */
     Vector libdev = InstanceXlate.simulateLibdev();
@@ -440,16 +424,10 @@ public class Devxlate
         continue;
 
       Devxlate devx = new Devxlate(path);
-      devx.major    = major;
-      devx.minor    = minor;
       devx.instance = instance;
       instance_list.add(devx);
       if (debug) common.ptod("getDeviceLookupData added: " + devx.fullname);
     }
-
-
-    double elapsed = (System.currentTimeMillis() - starttm) / 1000.0;
-    common.ptod(Format.f("Configuration interpretation took %.2f seconds", elapsed));
   }
 
 
@@ -571,6 +549,7 @@ public class Devxlate
               pool = special.substring(0, special.indexOf("/"));
             else
               pool = special;
+
             findZfsDevices(pool);
           }
 
@@ -607,19 +586,6 @@ public class Devxlate
         if (devx != null)
           dlist.add(devx);
       }
-    }
-
-    /* If we did not find anything, try something special for a tape device: */
-    //common.ptod("fname_in: " + fname_in);
-    //common.ptod("dlist.size(): " + dlist.size());
-    if (dlist.size() == 0 && fname_in.startsWith("/dev/rmt/"))
-    {
-      Devxlate devx = new Devxlate(fname_in);
-      devx.instance = findTapeInstance(fname_in);
-      if (devx.instance != null)
-        dlist.add(devx);
-      common.ptod("Obtained instance " + devx.instance + " for " + fname_in +
-                  " from /etc/path/to/inst.");
     }
 
     if (dlist.size() == 0)
@@ -1025,39 +991,6 @@ public class Devxlate
 
 
 
-  public static void print_ls_devices_list()
-  {
-
-    /* First print all device that I have all the stuff for: */
-    for (int i = 0; i < instance_list.size(); i++)
-    {
-      Devxlate devx = (Devxlate) instance_list.elementAt(i);
-      if (devx.instance == null)
-        continue;
-
-      common.ptod(Format.f("%-40s", devx.fullname) +
-                  Format.f(" %6d", devx.major) +
-                  Format.f(",%6d", devx.minor) +
-                  Format.f(" %-8s  ", devx.instance));
-    }
-
-
-    /* Then print all the rest:
-    common.ptod("");
-    for (int i = 0; i < ls_devices_list.size(); i++)
-    {
-      Devxlate devx = (Devxlate) ls_devices_list.elementAt(i);
-      if (devx.instance != null)
-        continue;
-
-      common.ptod(Format.f("%-40s", devx.fullname) +
-                         Format.f(" %6d", devx.major) +
-                         Format.f(",%6d", devx.minor));
-    }
-    */
-  }
-
-
   /**
    * There is a problem translating device or file names to raw devices and
    * therefore Kstat instances.
@@ -1084,8 +1017,6 @@ public class Devxlate
       //common.ptod("Please contact author of vdbench for assistance with resolving this problem.");
 
       common.ptod("vdbench will continue without collecting kstat statistics.");
-      common.ptod("You can use the 'sd=sd1,lun=xyz,kstat=(/dev/rdsk/xx,/dev/rdsk/yy' parameter");
-      common.ptod("to manually add the real device names.");
       common.ptod("");
       common.ptod("");
 
@@ -1124,21 +1055,41 @@ public class Devxlate
    * errors: No known data errors
    *
    */
+
   private static void findZfsDevices(String pool)
   {
-    OS_cmd ocmd = new OS_cmd();
-    ocmd.addText("/usr/sbin/zpool status  " + pool);
-    ocmd.execute();
+    /* Don't want to waste any time: */
+    if (!pool.equals(last_zpool_checked))
+    {
+      last_zpool_checked = pool;
+      OS_cmd ocmd = new OS_cmd();
+      ocmd.addText("/usr/sbin/zpool status  " + pool);
+      ocmd.execute();
 
-    if (debug) common.ptod("findZfsDevices: " + pool);
+      if (debug) common.ptod("findZfsDevices: " + pool);
 
-    String[] stdout = ocmd.getStdout();
+      zfs_stdout = ocmd.getStdout();
+
+      // This is just debugging. Removed.
+      //ocmd = new OS_cmd();
+      //ocmd.addText("/usr/sbin/zfs get all");
+      //ocmd.addText(pool);
+      //ocmd.execute();
+      //String[] stdout = ocmd.getStdout();
+      //String[] stderr = ocmd.getStderr();
+      //for (int i = 0; i < stdout.length; i++)
+      //  common.ptod("stdout: " + stdout[i]);
+      //for (int i = 0; i < stderr.length; i++)
+      //  common.ptod("stderr: " + stderr[i]);
+    }
+
+
     int index = 0;
 
     /* Skip until I find the pool name: */
-    for (index = 0; index < stdout.length; index++)
+    for (index = 0; index < zfs_stdout.length; index++)
     {
-      String line        = stdout[index];
+      String line        = zfs_stdout[index];
       StringTokenizer st = new StringTokenizer(line);
       if (!st.hasMoreTokens())
         continue;
@@ -1151,9 +1102,9 @@ public class Devxlate
 
 
     /* After this we find device names until we get a line with "errors": */
-    for (; index < stdout.length; index++)
+    for (; index < zfs_stdout.length; index++)
     {
-      String line = stdout[index];
+      String line = zfs_stdout[index];
       if (line.startsWith("errors"))
         break;
 
@@ -1193,114 +1144,8 @@ public class Devxlate
   }
 
 
-  public String toString()
-  {
-    String txt = "Devxlate#" + seqno;
-    txt += "\n fullname:      " + fullname;
-    txt += "\n major:         " + major;
-    txt += "\n minor:         " + minor;
-    txt += "\n instance:      " + instance;
-    txt += "\n kstat_ptr:     " + kstat_pointer;
-    return txt;
-  }
-
-
-  public static String findTapeInstance(String tape)
-  {
-    /* ls /dev/rmt/x should give us a proper device name: */
-    OS_cmd ocmd = new OS_cmd();
-    ocmd.addText("/usr/bin/ls -alF " + tape);
-    ocmd.execute();
-
-    /* Output may have only one line: */
-    String[] stdout = ocmd.getStdout();
-    if (stdout.length != 1)
-    {
-      common.ptod("command: " + ocmd.getCmd());
-      for (int i = 0; i < stdout.length; i++)
-        common.ptod("stdout: " + stdout[i]);
-      common.ptod("Unexpected length from 'ls' command");
-      return null;
-    }
-
-    /* There must be 11 tokens: */
-    String line = stdout[0];
-    StringTokenizer st = new StringTokenizer(line);
-    if (st.countTokens() != 11)
-    {
-      common.ptod("command: " + ocmd.getCmd());
-      common.ptod("line: " + line);
-      common.ptod("Unexpected contents from 'ls' command");
-      return null;
-    }
-
-    String device_name = line.substring(line.lastIndexOf(" ") + 1);
-
-    common.ptod("device_name: " + device_name);
-
-    /* Device must start with ../../devices, remove it */
-    if (!device_name.startsWith("../../devices"))
-    {
-      common.ptod("command: " + ocmd.getCmd());
-      common.ptod("device_name: " + device_name);
-      common.ptod("Device name does not start with ../../devices");
-      return null;
-    }
-
-    device_name = device_name.substring(13);
-    common.ptod("device_name: " + device_name);
-
-    /* Device must end with ':', remove it */
-    if (!device_name.endsWith(":"))
-    {
-      common.ptod("command: " + ocmd.getCmd());
-      common.ptod("device_name: " + device_name);
-      common.ptod("Device name does not end with ':'");
-      return null;
-    }
-
-    device_name = device_name.substring(0, device_name.length() -1);
-    common.ptod("device_name: " + device_name);
-
-
-    /* Now scan through path-to-inst: */
-    Vector paths = Fget.read_file_to_vector("/etc/path_to_inst");
-    for (int i = 0; i < paths.size(); i++)
-    {
-      line = (String) paths.elementAt(i);
-      if (line.startsWith("#"))
-        continue;
-      st = new StringTokenizer(line);
-      if (st.countTokens() != 3)
-        continue;
-
-      //if (line.indexOf("9ec940") == -1)
-      //  continue;
-
-      String path   = common.replace(st.nextToken(), "\"", "");
-      String number = st.nextToken();
-      String driver = common.replace(st.nextToken(), "\"", "");
-
-      //common.ptod("path:        " + path);
-      //common.ptod("device_name: " + device_name);
-
-      if (!device_name.equals(path))
-        continue;
-
-      common.ptod("path:   " + path);
-      common.ptod("number: " + number);
-      common.ptod("driver: " + driver);
-
-      return driver + number;
-    }
-
-    common.ptod("command: " + ocmd.getCmd());
-    common.ptod("line: " + line);
-    return null;
-  }
 
   public static void main(String[] args)
   {
-    common.ptod("xx: " + findTapeInstance(args[0]));
   }
 }

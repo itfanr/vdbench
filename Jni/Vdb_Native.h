@@ -9,6 +9,14 @@ extern "C" {
 #endif
 /*
  * Class:     Vdb_Native
+ * Method:    nativeSleep
+ * Signature: (J)V
+ */
+JNIEXPORT void JNICALL Java_Vdb_Native_nativeSleep
+  (JNIEnv *, jclass, jlong);
+
+/*
+ * Class:     Vdb_Native
  * Method:    openfile
  * Signature: (Ljava/lang/String;II)J
  */
@@ -57,67 +65,83 @@ JNIEXPORT jlong JNICALL Java_Vdb_Native_get_1simple_1tod
 
 /*
  * Class:     Vdb_Native
- * Method:    multi_io
- * Signature: ([JI)V
- */
-JNIEXPORT void JNICALL Java_Vdb_Native_multi_1io
-  (JNIEnv *, jclass, jlongArray, jint);
-
-/*
- * Class:     Vdb_Native
  * Method:    read
- * Signature: (JJJJ)J
+ * Signature: (JJJJI)J
  */
 JNIEXPORT jlong JNICALL Java_Vdb_Native_read
-  (JNIEnv *, jclass, jlong, jlong, jlong, jlong);
+  (JNIEnv *, jclass, jlong, jlong, jlong, jlong, jint);
 
 /*
  * Class:     Vdb_Native
  * Method:    write
- * Signature: (JJJJ)J
+ * Signature: (JJJJI)J
  */
 JNIEXPORT jlong JNICALL Java_Vdb_Native_write
-  (JNIEnv *, jclass, jlong, jlong, jlong, jlong);
+  (JNIEnv *, jclass, jlong, jlong, jlong, jlong, jint);
+
+/*
+ * Class:     Vdb_Native
+ * Method:    noDedupWrite
+ * Signature: (JJJJI)J
+ */
+JNIEXPORT jlong JNICALL Java_Vdb_Native_noDedupWrite
+  (JNIEnv *, jclass, jlong, jlong, jlong, jlong, jint);
 
 /*
  * Class:     Vdb_Native
  * Method:    store_pattern
- * Signature: ([II)V
+ * Signature: ([I)V
  */
 JNIEXPORT void JNICALL Java_Vdb_Native_store_1pattern
-  (JNIEnv *, jclass, jintArray, jint);
+  (JNIEnv *, jclass, jintArray);
 
 /*
  * Class:     Vdb_Native
  * Method:    array_to_buffer
- * Signature: ([IJ)V
+ * Signature: ([IJI)V
  */
 JNIEXPORT void JNICALL Java_Vdb_Native_array_1to_1buffer
-  (JNIEnv *, jclass, jintArray, jlong);
+  (JNIEnv *, jclass, jintArray, jlong, jint);
 
 /*
  * Class:     Vdb_Native
  * Method:    buffer_to_array
- * Signature: ([IJJ)V
+ * Signature: ([IJI)V
  */
 JNIEXPORT void JNICALL Java_Vdb_Native_buffer_1to_1array
-  (JNIEnv *, jclass, jintArray, jlong, jlong);
+  (JNIEnv *, jclass, jintArray, jlong, jint);
+
+/*
+ * Class:     Vdb_Native
+ * Method:    longBufferToArray
+ * Signature: ([JJI)V
+ */
+JNIEXPORT void JNICALL Java_Vdb_Native_longBufferToArray
+  (JNIEnv *, jclass, jlongArray, jlong, jint);
+
+/*
+ * Class:     Vdb_Native
+ * Method:    arrayToLongBuffer
+ * Signature: ([JJI)V
+ */
+JNIEXPORT void JNICALL Java_Vdb_Native_arrayToLongBuffer
+  (JNIEnv *, jclass, jlongArray, jlong, jint);
 
 /*
  * Class:     Vdb_Native
  * Method:    allocbuf
- * Signature: (J)J
+ * Signature: (I)J
  */
 JNIEXPORT jlong JNICALL Java_Vdb_Native_allocbuf
-  (JNIEnv *, jclass, jlong);
+  (JNIEnv *, jclass, jint);
 
 /*
  * Class:     Vdb_Native
  * Method:    freebuf
- * Signature: (JJ)V
+ * Signature: (IJ)V
  */
 JNIEXPORT void JNICALL Java_Vdb_Native_freebuf
-  (JNIEnv *, jclass, jlong, jlong);
+  (JNIEnv *, jclass, jint, jlong);
 
 /*
  * Class:     Vdb_Native
@@ -162,33 +186,33 @@ JNIEXPORT jlong JNICALL Java_Vdb_Native_closeKstatGlobal
 /*
  * Class:     Vdb_Native
  * Method:    setup_jni_context
- * Signature: (IDDDDJJJJJJJIILjava/lang/String;Ljava/lang/String;)V
+ * Signature: (ILjava/lang/String;[J[J)V
  */
 JNIEXPORT void JNICALL Java_Vdb_Native_setup_1jni_1context
-  (JNIEnv *, jclass, jint, jdouble, jdouble, jdouble, jdouble, jlong, jlong, jlong, jlong, jlong, jlong, jlong, jint, jint, jstring, jstring);
+  (JNIEnv *, jclass, jint, jstring, jlongArray, jlongArray);
 
 /*
  * Class:     Vdb_Native
  * Method:    get_one_set_statistics
- * Signature: (LVdb/WG_stats;IZ)V
+ * Signature: (I[J[J)Ljava/lang/String;
  */
-JNIEXPORT void JNICALL Java_Vdb_Native_get_1one_1set_1statistics
-  (JNIEnv *, jclass, jobject, jint, jboolean);
+JNIEXPORT jstring JNICALL Java_Vdb_Native_get_1one_1set_1statistics
+  (JNIEnv *, jclass, jint, jlongArray, jlongArray);
 
 /*
  * Class:     Vdb_Native
  * Method:    alloc_jni_shared_memory
- * Signature: (ZLjava/lang/String;)V
+ * Signature: (J)V
  */
 JNIEXPORT void JNICALL Java_Vdb_Native_alloc_1jni_1shared_1memory
-  (JNIEnv *, jclass, jboolean, jstring);
+  (JNIEnv *, jclass, jlong);
 
 /*
  * Class:     Vdb_Native
- * Method:    free_jni_shared_memory
- * Signature: ()V
+ * Method:    getSolarisPids
+ * Signature: ()J
  */
-JNIEXPORT void JNICALL Java_Vdb_Native_free_1jni_1shared_1memory
+JNIEXPORT jlong JNICALL Java_Vdb_Native_getSolarisPids
   (JNIEnv *, jclass);
 
 /*
@@ -201,43 +225,35 @@ JNIEXPORT jstring JNICALL Java_Vdb_Native_getWindowsErrorText
 
 /*
  * Class:     Vdb_Native
- * Method:    windows_rewind
- * Signature: (JJ)J
+ * Method:    multiKeyReadAndValidate
+ * Signature: (JIJJIJI[I[J[JLjava/lang/String;I)J
  */
-JNIEXPORT jlong JNICALL Java_Vdb_Native_windows_1rewind
-  (JNIEnv *, jclass, jlong, jlong);
+JNIEXPORT jlong JNICALL Java_Vdb_Native_multiKeyReadAndValidate
+  (JNIEnv *, jclass, jlong, jint, jlong, jlong, jint, jlong, jint, jintArray, jlongArray, jlongArray, jstring, jint);
 
 /*
  * Class:     Vdb_Native
- * Method:    windows_tapemark
- * Signature: (JJJ)J
+ * Method:    multiKeyFillAndWrite
+ * Signature: (JJIJJIJIJI[I[J[JLjava/lang/String;I)J
  */
-JNIEXPORT jlong JNICALL Java_Vdb_Native_windows_1tapemark
-  (JNIEnv *, jclass, jlong, jlong, jlong);
+JNIEXPORT jlong JNICALL Java_Vdb_Native_multiKeyFillAndWrite
+  (JNIEnv *, jclass, jlong, jlong, jint, jlong, jlong, jint, jlong, jint, jlong, jint, jintArray, jlongArray, jlongArray, jstring, jint);
 
 /*
  * Class:     Vdb_Native
- * Method:    readAndValidate
- * Signature: (JJJIJI[ILjava/lang/String;)J
- */
-JNIEXPORT jlong JNICALL Java_Vdb_Native_readAndValidate
-  (JNIEnv *, jclass, jlong, jlong, jlong, jint, jlong, jint, jintArray, jstring);
-
-/*
- * Class:     Vdb_Native
- * Method:    fillAndWrite
- * Signature: (JJJIJI[ILjava/lang/String;)J
- */
-JNIEXPORT jlong JNICALL Java_Vdb_Native_fillAndWrite
-  (JNIEnv *, jclass, jlong, jlong, jlong, jint, jlong, jint, jintArray, jstring);
-
-/*
- * Class:     Vdb_Native
- * Method:    fillLFSR
+ * Method:    fillLfsrArray
  * Signature: ([IJILjava/lang/String;)V
  */
-JNIEXPORT void JNICALL Java_Vdb_Native_fillLFSR
+JNIEXPORT void JNICALL Java_Vdb_Native_fillLfsrArray
   (JNIEnv *, jclass, jintArray, jlong, jint, jstring);
+
+/*
+ * Class:     Vdb_Native
+ * Method:    fillLfsrBuffer
+ * Signature: (JIJILjava/lang/String;)V
+ */
+JNIEXPORT void JNICALL Java_Vdb_Native_fillLfsrBuffer
+  (JNIEnv *, jclass, jlong, jint, jlong, jint, jstring);
 
 /*
  * Class:     Vdb_Native
@@ -245,6 +261,38 @@ JNIEXPORT void JNICALL Java_Vdb_Native_fillLFSR
  * Signature: (JJ)I
  */
 JNIEXPORT jint JNICALL Java_Vdb_Native_eraseFileSystemCache
+  (JNIEnv *, jclass, jlong, jlong);
+
+/*
+ * Class:     Vdb_Native
+ * Method:    getErrorText
+ * Signature: (I)Ljava/lang/String;
+ */
+JNIEXPORT jstring JNICALL Java_Vdb_Native_getErrorText
+  (JNIEnv *, jclass, jint);
+
+/*
+ * Class:     Vdb_Native
+ * Method:    chmod
+ * Signature: (Ljava/lang/String;)J
+ */
+JNIEXPORT jlong JNICALL Java_Vdb_Native_chmod
+  (JNIEnv *, jclass, jstring);
+
+/*
+ * Class:     Vdb_Native
+ * Method:    getTickCount
+ * Signature: ()J
+ */
+JNIEXPORT jlong JNICALL Java_Vdb_Native_getTickCount
+  (JNIEnv *, jclass);
+
+/*
+ * Class:     Vdb_Native
+ * Method:    truncateFile
+ * Signature: (JJ)J
+ */
+JNIEXPORT jlong JNICALL Java_Vdb_Native_truncateFile
   (JNIEnv *, jclass, jlong, jlong);
 
 #ifdef __cplusplus

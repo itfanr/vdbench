@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -31,8 +13,8 @@ import java.util.Random;
 
 public class ownmath
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   //public double max = 0.0;
   //public double min = 0;
@@ -133,6 +115,151 @@ public class ownmath
 
     return Math.sqrt((((double)n*(double)(sumsqr))-((double)(sum)*(double)(sum)))/((double)n*((double)n-1.0)));
   }
-}
 
+
+
+  /*
+   * Generate a number based upon an poisson distribution
+   * max_value - the max value to generate.
+   */
+  private static Random p_random = new Random(0); // for now use fixed seed:
+
+  private static long experiment = 0;
+  private static long last_100k  = 0;
+  private static long offset     = 0;
+  public  static long distPoisson(long max_value, double midpoint)
+  {
+    /* pick a number from Zero to 1 */
+    double rand = p_random.nextDouble();
+
+    /* This is the big knob for skewing the file selection                          */
+    /* average number picked is 1/3 of the number of files                          */
+    /* so half the access is over 1/3 of the file, other half over 2/3s of the file */
+    double average = max_value / midpoint;
+
+    if (rand == 0.0)
+      return 0;
+
+
+    long lvalue = ((long) (rand == 0.0 ? 0 : ((long)(-(Math.log(rand))*(average)))) % max_value);
+
+    return lvalue;
+
+    //    // experiment++;
+    //    // if (experiment % 100000 == 0)
+    //    // {
+    //    //   rand        = p_random.nextDouble();
+    //    //   offset  = (long) (rand * max_value);
+    //    // }
+    //    // lvalue      = (lvalue + offset) % max_value;
+    //
+    //    long middle = max_value / 2;
+    //
+    //    long gaussian = ((long) (p_random.nextGaussian() * max_value ));
+    //
+    //    //common.ptod("lvalue: " + lvalue);
+    //
+    //    //lvalue = Math.abs(lvalue) % max_value;
+    //    //lvalue     = ((long) (rand.nextGaussian() * max_value ));
+    //
+    //    common.ptod("gaus: %,8d %,8d %,8d %,8d", gaussian, middle, max_value,
+    //                Math.abs((middle + gaussian)) % max_value);
+    //
+    //    return Math.abs((middle + gaussian)) % max_value;
+  }
+
+  public static void main(String[] args)
+  {
+    int    file_count     = Integer.parseInt(args[0]);
+    long   loops          = Integer.parseInt(args[1]) * 1000000l;
+    String stars          = "**************************************************" +
+                            "**************************************************";
+
+
+    for (int arg = 2; arg < args.length; arg++)
+    {
+      int    range          = Integer.parseInt(args[arg]);
+      int[]  counters       = new int[ file_count ];
+      long   random_zeroes  = 0;
+      long   negatives      = 0;
+      int    max_count      = 0;
+
+
+      int misses   = 0;
+
+      long report = 50 * 1000 * 1000l;
+
+
+      for (long index = 1; index < loops +1 ; index++)
+      {
+        long result = distPoisson(file_count, range);
+
+        if (result == Long.MAX_VALUE)
+        {
+          random_zeroes++;
+          continue;
+        }
+
+        if (result < 0)
+        {
+          negatives++;
+          continue;
+        }
+
+        if (counters[ (int) result ] == 0)
+          misses++;
+
+        counters[ (int) result ]++;
+
+        if ((index % report) == 0)
+        {
+          long speed   = 100;
+          long bytes   = misses * 4096l;
+          double mb    = bytes / 1024 / 1024.;
+          double gb    = bytes / 1024 / 1024 / 1024.;
+          common.ptod("4k Files done: %5d million; "+
+                      "hits: %,15d; "+
+                      "hit%%: %6.2f "+
+                      "unique_gb: %7.2f "+
+                      "speed: %3d mb/sec "+
+                      "elapsed: %5d",
+                      index / 1000000,
+                      (index - misses),
+                      ((index - misses) * 100.) / index,
+                      gb,
+                      speed,
+                      (int) (mb / speed)
+                     );
+        }
+      }
+
+      common.ptod("range:         %,12d ", range);
+      common.ptod("loops:         %,12d ", loops);
+      common.ptod("negatives:     %,12d ", negatives);
+      common.ptod("random_zeroes: %,12d ", random_zeroes);
+
+      /* Find highest count: */
+      for (int i = 0; i < file_count; i++)
+        max_count = Math.max(max_count, counters[i]);
+
+      double cum_pct = 0;
+      for (int i = 0; i < file_count; i++)
+      {
+        if (i > 30)
+          break;
+        int count  = counters[i];
+        double pct = count * 100. / loops;
+        cum_pct   += pct;
+
+        double chars = count * 100 / max_count;
+        String st    = stars.substring(0, (int) (chars * stars.length() / 100.));
+
+        String txt = String.format("[%3d]: %8d  %5.2f%%  %6.2f%% %s", i, count,
+                                   pct, cum_pct, st);
+        System.out.println(txt);
+      }
+    }
+
+  }
+}
 

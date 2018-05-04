@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -40,8 +22,8 @@ import Utils.Format;
  */
 public class FinalTotals
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.";
 
   private static SdStats total_sd    = new SdStats();
   private static Kstat_data total_ks = new Kstat_data();
@@ -66,11 +48,12 @@ public class FinalTotals
     if (total_sd.reads + total_sd.writes == 0)
       return;
 
-    PrintWriter pw = Report.createHmtlFile("totals.html");
+    /* This is an undocumented option, and is NOT the normal 'totals.html' */
+    PrintWriter pw = Report.createHmtlFile("totals_optional.html");
 
     double GB = 1024 * 1024 * 1024;
-    double gigabytesr = total_sd.rbytes / GB;
-    double gigabytesw = total_sd.wbytes / GB;
+    double gigabytesr = total_sd.r_bytes / GB;
+    double gigabytesw = total_sd.w_bytes / GB;
     double gigabytes  = gigabytesr + gigabytesw;
     double errors_gb  = (ErrorLog.getErrorCount() == 0) ? 0 : (ErrorLog.getErrorCount() / gigabytes);
 
@@ -82,16 +65,16 @@ public class FinalTotals
 
     pw.println("");
     pw.println("Overall execution totals logical i/o: ");
-    pw.println(Format.f("Total iops:             %8.2f", total_sd.rate()));
-    pw.println(Format.f("Total reads+writes:     %8d", (total_sd.reads + total_sd.writes)));
-    pw.println(Format.f("Total gigabytes:        %8.2f", gigabytes));
-    pw.println(Format.f("Total gigabytes read:   %8.2f", gigabytesr));
-    pw.println(Format.f("Total gigabytes write:  %8.2f", gigabytesw));
-    pw.println(Format.f("Total reads:            %8d", total_sd.reads));
-    pw.println(Format.f("Total writes:           %8d", total_sd.writes));
-    pw.println(Format.f("Total readpct:          %8.2f", total_sd.readpct()));
-    pw.println(Format.f("Total I/O or DV errors: %8d", ErrorLog.getErrorCount()) +
-                Format.f(" (%.8f errors per GB)", errors_gb));
+    pw.println(Format.f("Total iops:             %12.2f", total_sd.rate()));
+    pw.println(Format.f("Total reads+writes:     %12d", (total_sd.reads + total_sd.writes)));
+    pw.println(Format.f("Total gigabytes:        %12.2f", gigabytes));
+    pw.println(Format.f("Total gigabytes read:   %12.2f", gigabytesr));
+    pw.println(Format.f("Total gigabytes write:  %12.2f", gigabytesw));
+    pw.println(Format.f("Total reads:            %12d", total_sd.reads));
+    pw.println(Format.f("Total writes:           %12d", total_sd.writes));
+    pw.println(Format.f("Total readpct:          %12.2f", total_sd.readpct()));
+    pw.println(Format.f("Total I/O or DV errors: %12d", ErrorLog.getErrorCount()) +
+                Format.f(" (%.12f errors per GB)", errors_gb));
     pw.println("");
 
     if (!common.onSolaris())

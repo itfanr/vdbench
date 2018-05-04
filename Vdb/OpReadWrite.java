@@ -1,33 +1,17 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved.
+ */
+
+/*
+ * Author: Henk Vandenbergh.
  */
 
 import java.util.Vector;
 
 import Utils.Format;
 
-/*
- * Author: Henk Vandenbergh.
- */
 
 /**
  * Do a mixed read/write to a file.
@@ -37,8 +21,8 @@ import Utils.Format;
  */
 class OpReadWrite extends FwgThread
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved.";
 
   private OpRead    opread   = null;
   private OpWrite   opwrite  = null;
@@ -53,6 +37,7 @@ class OpReadWrite extends FwgThread
     signal = new Signal(30);
 
     opread  = new OpRead(null, fwg);
+    opread.usingOpReadWrite();
     opwrite = new OpWrite(null, fwg);
   }
 
@@ -78,7 +63,7 @@ class OpReadWrite extends FwgThread
 
     /* The ActiveFile instance must be passed between the two, it must also */
     /* be stored in the current OpReadWrite instance so that at the end     */
-    /* of the run any still open file can be close.                         */
+    /* of the run any still open file can be closed.                        */
     boolean rc;
 
     /* Call the requested type of operation. */
@@ -86,12 +71,18 @@ class OpReadWrite extends FwgThread
     {
       opread.afe = last_active_file;
       rc = opread.doOperation();
+
+      opread.consecutive_blocks = 0;
+      opread.last_ok_request = System.currentTimeMillis();
       afe = last_active_file = opread.afe;
     }
     else
     {
       opwrite.afe = last_active_file;
       rc = opwrite.doOperation();
+
+      opwrite.consecutive_blocks = 0;
+      opwrite.last_ok_request = System.currentTimeMillis();
       afe = last_active_file = opwrite.afe;
     }
 

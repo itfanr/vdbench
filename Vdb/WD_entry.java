@@ -1,38 +1,15 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
  */
 
 import java.io.Serializable;
-import java.lang.*;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Vector;
-
-import Oracle.OracleParms;
+import java.util.*;
 
 
 /**
@@ -40,13 +17,19 @@ import Oracle.OracleParms;
   */
 public class WD_entry implements Cloneable, Serializable
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   String   wd_name = "default";/* Name for this Workload Definition           */
   String   wd_sd_name;         /* Name of Storage Definitions used            */
   String[] sd_names = null;    /* SD names requested, will be xlated to wd_sd_name */
   String[] host_names = new String[] { "*"};
+
+  SD_entry concat_sd = null;
+
+  int      wd_threads      = 0;
+
+  int      stream_count = 0;
 
   int      priority  = Integer.MAX_VALUE;
   double   wd_iorate = 0;
@@ -54,25 +37,37 @@ public class WD_entry implements Cloneable, Serializable
   double   skew_original = 0;  /* io rate skew this WD gets.                  */
   double   skew_observed;      /* From wg.report_wg_iocount. For curve        */
   boolean  valid_skew_obs = false;
+
+  boolean  hotband_used = false;
   double   lowrange  = -1;     /* Starting and                                */
   double   highrange = -1;     /* Ending search range within SD               */
+
+  double   poisson_midpoint = 0;
   double   seekpct = 100;      /* How often do we need a seek?                */
+                               /* 100: pure reandom                           */
+                               /*   0: pure sequential                        */
+                               /*  -1: seek=eof, pure sequential              */
+  long     stride_min = -1;    /* Minimum to add when generating a random lba */
+  long     stride_max = -1;    /* Maximum for same.                           */
 
   double   rhpct = 0;          /* Read hit % obtained from WD                 */
   double   whpct = 0;          /* Write hit % obtained from WD                */
 
-  int      xfersize = 4096;    /* Data transfersize                           */
-  double[] xf_table;           /* Distribution table                          */
+  double[] xf_table = {4096};  /* Distribution table                          */
   double   readpct = 100;      /* Read percentage for this WD                 */
 
   long     total_io_done;      /* Used to set skew for curve runs             */
 
-  String[] generate_parameters = null;
-  boolean  seq_workload_warning_given = false;
+  boolean  one_slave_warning_given = false;
 
   OpenFlags  open_flags = null;
 
+  String[] user_class_parms = null;
+
+  private static boolean any_hotbands_requested = false;
+
   static   WD_entry dflt = new WD_entry();
+  static   int max_wd_name = 0;
 
 
 
@@ -88,8 +83,7 @@ public class WD_entry implements Cloneable, Serializable
       if (sd_names   != null) wd.sd_names   = (String[]) sd_names.clone();
       if (host_names != null) wd.host_names = (String[]) host_names.clone();
       if (xf_table   != null) wd.xf_table   = (double[]) xf_table.clone();
-      if (open_flags != null)
-        wd.open_flags   = (OpenFlags) open_flags.clone();
+      if (open_flags != null) wd.open_flags = (OpenFlags) open_flags.clone();
 
       return wd;
     }
@@ -141,16 +135,8 @@ public class WD_entry implements Cloneable, Serializable
 
     try
     {
-
-
       while (true)
       {
-        if (str.equalsIgnoreCase("oracle_parameters"))
-        {
-          str = OracleParms.readParms();
-          continue;
-        }
-
         prm = Vdb_scan.parms_split(str);
 
         if (prm.keyword.equals("fwd") ||
@@ -167,6 +153,14 @@ public class WD_entry implements Cloneable, Serializable
             wd.wd_name = prm.alphas[0];
             wd_check_duplicate(wd_list, wd.wd_name);
             wd_list.addElement(wd);
+            max_wd_name = Math.max(max_wd_name, wd.wd_name.length());
+
+            /* Replay now uses the Vdbench API: */
+            if (ReplayInfo.isReplay())
+              wd.user_class_parms = new String[]
+              {
+                "Vdb.ReplayGen"
+              };
 
             if (Vdbmain.isFwdWorkload())
               common.ptod("'fwd' and 'wd' parameters are mutually exclusive");
@@ -176,35 +170,17 @@ public class WD_entry implements Cloneable, Serializable
 
         else if (prm.keyword.equals("sd"))
         {
+          if (prm.alpha_count == 0)
+            common.failure("No parameters defined for 'wd=%s,sd=: %s", wd.wd_name, str);
           wd.sd_names   = prm.alphas;
-          wd.wd_sd_name = prm.alphas[0]; // in case there is just one sd
+          wd.wd_sd_name = wd.sd_names[0]; // in case there is just one sd
         }
 
         else if ("skew".startsWith(prm.keyword))
           wd.skew_original = prm.numerics[0];
 
         else if ("xfersize".startsWith(prm.keyword))
-        {
-          if (prm.numerics.length == 1)
-            wd.xfersize = (int) prm.numerics[0];
-          else
-          {
-            double cumpct = 0;
-            wd.xfersize = -1;
-            wd.xf_table = new double[prm.numerics.length];
-            for (int i = 0; i < prm.numerics.length; i++)
-            {
-              if (i % 2 == 1)
-                cumpct += prm.numerics[i];
-              wd.xf_table[i] = prm.numerics[i];
-
-              if (i % 2 == 0 && wd.xf_table[i] % 512 != 0)
-                common.failure("data transfer size not multiple of 512 bytes: " + (int) wd.xf_table[i]);
-            }
-            if ((int) cumpct != 100)
-              common.failure("Xfersize distribution does not add up to 100");
-          }
-        }
+          wd.parseXfersize(prm);
 
         else if ("readpct".startsWith(prm.keyword) || "rdpct".startsWith(prm.keyword))
           wd.readpct = (int) prm.numerics[0];
@@ -220,34 +196,27 @@ public class WD_entry implements Cloneable, Serializable
           else
             common.failure("'range=' parameter must be specified with a "+
                            "beginning and ending range, e.g. 'range=(10,20)'");
+          //common.where();
+          //ConcatSds.abortIf("'range=' parameter may not be used");
+        }
+
+        else if ("hotband".startsWith(prm.keyword))
+        {
+          any_hotbands_requested = true;
+          wd.hotband_used = true;
+          wd.lowrange = prm.numerics[0];
+          if (prm.getNumCount() > 1)
+            wd.highrange = prm.numerics[1];
+          else
+            common.failure("'hotband=' parameter must be specified with a "+
+                           "beginning and ending range, e.g. 'hotband=(10,20)'");
         }
 
         else if ("seekpct".startsWith(prm.keyword))
-        {
-          if (prm.getAlphaCount() > 0)
-          {
-            if (SD_entry.isTapeTesting() && !prm.alphas[0].equals("eof"))
-              common.ptod("'seekpct=' other than 'seekpct=eof' is ignored for a tape drive.");
+          wd.parseSeekpct(prm);
 
-            else
-            {
-              if ("sequential".startsWith(prm.alphas[0]))
-                wd.seekpct = 0;
-
-              else if (prm.alphas[0].equalsIgnoreCase("eof"))
-                wd.seekpct = -1;
-
-              else if ("random".startsWith(prm.alphas[0]))
-                wd.seekpct = 100;
-
-              else
-                common.failure("Invalid contents for 'seekpct=': " + prm.alphas[0]);
-            }
-          }
-
-          else
-            wd.seekpct = prm.numerics[0];   /* Negative %% means: stop after EOF */
-        }
+        else if ("stride".startsWith(prm.keyword))
+          wd.parseStride(prm);
 
         else if ("priority".startsWith(prm.keyword))
         {
@@ -265,22 +234,41 @@ public class WD_entry implements Cloneable, Serializable
         }
 
         else if ("rhpct".startsWith(prm.keyword))
+        {
+          ConcatSds.abortIf("'rhpct=' parameter may not be used.");
           wd.rhpct = prm.numerics[0];
+        }
 
         else if ("whpct".startsWith(prm.keyword))
+        {
+          ConcatSds.abortIf("'whpct=' parameter may not be used.");
           wd.whpct = prm.numerics[0];
+        }
 
         else if ("host".startsWith(prm.keyword) || prm.keyword.equals("hd"))
           wd.host_names = prm.alphas;
 
-        else if ("generate".startsWith(prm.keyword))
+        else if ("openflags".startsWith(prm.keyword))
+          wd.open_flags = new OpenFlags(prm.alphas, prm.numerics);
+
+        else if (prm.keyword.equals("user"))
+          wd.user_class_parms = prm.alphas;
+
+        else if ("threads".startsWith(prm.keyword))
         {
-          wd.generate_parameters = prm.alphas;
-          wd.seekpct = -1;   // Causes IO_task to stop after last i/o.
+          wd.wd_threads = (int) prm.numerics[0];
+          if (!Validate.sdConcatenation())
+            common.failure("Workload Definition (WD) level thread= parameter may "+
+                           "only be used together with 'concatenatesds=yes'");
         }
 
-        else if ("openflags".startsWith(prm.keyword))
-          wd.open_flags = new OpenFlags(prm.alphas);
+        else if ("streams".startsWith(prm.keyword))
+        {
+          prm.mustBeNumeric();
+          wd.stream_count = (int) prm.numerics[0];
+          if (wd.stream_count < 2)
+            common.failure("'streams=' parameter must specific a minimum of two streams");
+        }
 
         else
           common.failure("Unknown keyword: " + prm.keyword);
@@ -301,6 +289,7 @@ public class WD_entry implements Cloneable, Serializable
     {
       common.ptod("Exception during reading of input parameter file(s).");
       common.ptod("Look at the end of 'parmscan.html' to identify the last parameter scanned.");
+      common.ptod(e);
       common.failure("Exception during reading of input parameter file(s).");
     }
 
@@ -308,13 +297,103 @@ public class WD_entry implements Cloneable, Serializable
   }
 
 
+  /**
+   * xfersize= parameter. Either a single xfersize, a distribution list with
+   * xfersizes and percentages, or a three-part xfersize with min, max, align
+   * coded to allow for a random xfersize between min and max with an xfersize
+   * on an 'align' boundary.
+   */
+  private void parseXfersize(Vdb_scan prm)
+  {
+    double[] xf = xf_table = prm.numerics;
+
+    if (xf.length == 3)
+    {
+      if (xf[0] >= xf[1])
+        common.failure("xfersize=(min,max,align): 'xfersize=(%d,%d,%d)' invalid contents",
+                       xf[0], xf[1], xf[2]);
+      if (xf[2] == 0 || xf[2] %512 != 0)
+        common.failure("xfersize=(min,max,align): 'align' must be non-zero and "+
+                       "a multiple of 512: " + xf[2]);
+    }
+
+    else if (xf.length > 1)
+    {
+      if (xf.length % 2 != 0)
+        common.failure("Xfersize distribution list must be in pairs, e.g. " +
+                       "xfersize=(1k,25,2k,25,4k,50)");
+
+      double cumpct = 0;
+      for (int i = 0; i < prm.numerics.length; i++)
+      {
+        if (i % 2 == 1)
+          cumpct += xf[i];
+
+        if (i % 2 == 0 && xf[i] % 512 != 0)
+          common.failure("data transfer size not multiple of 512 bytes: " + (int) xf[i]);
+      }
+      int tmp = (int) Math.round(cumpct);
+      if (tmp != 100)
+        common.failure("Xfersize distribution does not add up to 100: " + tmp);
+    }
+  }
+
+  private void parseSeekpct(Vdb_scan prm)
+  {
+    for (String parm : prm.raw_values)
+    {
+      if ("sequential".startsWith(parm))
+        seekpct = 0;
+
+      else if (parm.equalsIgnoreCase("eof"))
+        seekpct = -1;
+
+      else if ("random".startsWith(parm))
+        seekpct = 100;
+
+      else if ("poisson".startsWith(parm))
+      {
+        seekpct = 100;
+        poisson_midpoint = 3;
+      }
+
+      else if (common.isDouble(parm))
+      {
+        if (poisson_midpoint == 0)
+          seekpct = Double.parseDouble(parm);
+        else
+          poisson_midpoint = Double.parseDouble(parm);
+      }
+
+      else
+        common.failure("Invalid contents for 'seekpct=': " + parm);
+    }
+
+    //common.ptod("seekpct: " + seekpct);
+    //common.ptod("poisson_midpoint: " + poisson_midpoint);
+  }
+
+  private void parseStride(Vdb_scan prm)
+  {
+    if (prm.getAlphaCount() > 0)
+      common.failure("stride= allows only numeric values");
+
+    if (prm.getNumCount() != 2)
+      common.failure("stride= requires two parameters: 'stride=(min,max)'");
+
+    stride_min = (long) prm.numerics[0];
+    stride_max = (long) prm.numerics[1];
+
+    if (stride_max < stride_min)
+      common.failure("stride=(min,max) max must be larger than stride minimum");
+  }
 
   /**
    * Find Host names requested by this WD
    */
-  public String[] getSelectedHostNames()
+  public ArrayList <Host> getSelectedHosts()
   {
-    Vector hosts_found = new Vector(8, 0);
+    ArrayList <Host> hosts_found = new ArrayList(8);
 
     /* Look for all hosts requested by this WD: */
     for (int i = 0; i < host_names.length; i++)
@@ -330,9 +409,7 @@ public class WD_entry implements Cloneable, Serializable
         if (common.simple_wildcard(host_names[i], host.getLabel()))
         {
           number_found++;
-          hosts_found.add(host.getLabel());
-          //common.ptod("host_names[i]: " + host_names[i]);
-          //common.ptod("getSelectedHostNames: " + host.getLabel());
+          hosts_found.add(host);
         }
       }
 
@@ -350,7 +427,7 @@ public class WD_entry implements Cloneable, Serializable
       }
     }
 
-    return(String[]) hosts_found.toArray(new String[0]);
+    return hosts_found;
   }
 
 
@@ -364,41 +441,39 @@ public class WD_entry implements Cloneable, Serializable
 
     /* First clear all active flags. We need this to assure that if an */
     /* SD is specified twice for this WD we signal it:                 */
-    for (int j = 0; j < Vdbmain.sd_list.size(); j++)
-      ((SD_entry) Vdbmain.sd_list.elementAt(j)).setActive(false);
+    SD_entry.clearAllActive();
 
     /* Look for all SD entries requested by this WD: */
-    boolean sd_match_for_name = false;
-    boolean sd_match_for_host = false;
-    for (int i = 0; i < sd_names.length; i++)
+    for (String sdname : sd_names)
     {
-      /* Scan all SDs, looking for a match with the requested name: */
-      for (int j = 0; j < Vdbmain.sd_list.size(); j++)
-      {
-        SD_entry sd = (SD_entry) Vdbmain.sd_list.elementAt(j);
+      boolean sd_match_for_name = false;
 
-        if (common.simple_wildcard(sd_names[i], sd.sd_name) )
+      /* Scan all SDs, looking for a match with the requested name: */
+      for (SD_entry sd : Vdbmain.sd_list)
+      {
+        if (!sd.concatenated_sd && common.simple_wildcard(sdname, sd.sd_name) )
         {
           sd_match_for_name = true;
 
           /* Only used this SD if it has been defined for this host: */
-          if (host.getLunNameForSd(sd.sd_name) == null)
+          if (!host.doesHostHaveSd(sd))
             continue;
 
           if (sd.isActive())
             common.failure("SD=" + sd.sd_name + " is requested more than once " +
                            "in wd=" + wd_name);
 
-          sd.setActive(true);
+          sd.setActive();
           sds_found.addElement(sd);
-          sd_match_for_host = true;
+
+          //common.ptod("getSdsForHost added host: " + host.getLabel() + " sd.sd_name: " + sd.sd_name);
         }
       }
 
       // This code must stay inactive for the caller to realize that he does
       // not get this sd!
       if (!sd_match_for_name)
-        common.failure("Could not find sd=" + sd_names[i] +
+        common.failure("Could not find sd=" + sdname +
                        " for wd=" + wd_name + ",host=" + host.getLabel());
     }
 
@@ -413,23 +488,9 @@ public class WD_entry implements Cloneable, Serializable
       if (wd.skew_original != 0 && wd.wd_iorate != 0)
         common.failure("Workload Definition (WD): 'iorate=' and 'skew=' are mutually exclusive");
     }
-  }
 
-  public void checkTapeParms()
-  {
-    if (!SD_entry.isTapeTesting())
-      return;
-
-    if (seekpct > 0)
-    {
-      common.ptod("checkTapeParms(): 'wd=" + wd_name + "' forced to use 'seekpct=eof' "+
-                  "because of tape testing");
-      seekpct = -1;
-    }
-
-    if (readpct != 0 && readpct != 100)
-      common.failure("When tape drives are present, all workloads must define "+
-                     "'rdpct=0' or 'rdpct=100");
+    if (Dedup.any_hotsets_requested && !any_hotbands_requested)
+      BoxPrint.printOne("When requesting 'deduphotsets=' the use of 'hotbands=' is highly recommended");
   }
 
 
@@ -490,11 +551,11 @@ public class WD_entry implements Cloneable, Serializable
       int lowest_non_io = no_iorate_users[ 0 ].intValue();
       for (int i = 0; i < iorate_users.length; i++)
       {
-        common.ptod("lowest_non_io: " + lowest_non_io);
-        common.ptod("iorate_users[i].intValue(): " + iorate_users[i].intValue());
+        //common.ptod("lowest_non_io: " + lowest_non_io);
+        //common.ptod("iorate_users[i].intValue(): " + iorate_users[i].intValue());
         if (iorate_users[i].intValue() >= lowest_non_io)
           common.failure("Workloads specifying iorate= must have a higher priority than " +
-                         "workloads that do NOT specfy iorate=");
+                         "workloads that do NOT specify iorate=");
       }
     }
   }

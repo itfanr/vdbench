@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -38,8 +20,8 @@ import Utils.Format;
  */
 abstract class FwgThread extends Thread
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   protected FwgEntry fwg;
 
@@ -49,18 +31,20 @@ abstract class FwgThread extends Thread
 
   protected ActiveFile afe = null;
 
-  private   long   consecutive_blocks = 0;
-  private   long   last_ok_request    = System.currentTimeMillis();
-  private   int    last_block         = 0;
+  public    long   consecutive_blocks = 0;
+  public    long   last_ok_request    = System.currentTimeMillis();
+  private   int     last_block          = 0;
 
-  private   long   native_buffer = 0;
-  private   int    buffer_length = 0;
+  private   long    native_read_buffer  = 0;
+  private   long    native_write_buffer = 0;
 
 
   protected boolean format;
   protected boolean format_restart;
   protected int     operation;
   private   boolean expect_rmdirs;
+
+  private int buffer_size = 0;
 
   /* Counters when running on slave: */
   public FwdStats per_thread_stats = new FwdStats();
@@ -88,12 +72,11 @@ abstract class FwgThread extends Thread
    */
   public FwgThread(Task_num tn, FwgEntry fwg)
   {
-    VdbCount.count(this);
     seqno = thread_number++;
     if (tn != null)
-      this.setName(tn.task_name + " rdx=" + SlaveWorker.work.work_rd_name);
+      this.setName(tn.task_name + " rd=" + SlaveWorker.work.work_rd_name);
     else
-      this.setName("notask " + " rdx=" + SlaveWorker.work.work_rd_name);
+      this.setName("notask " + " rd=" + SlaveWorker.work.work_rd_name);
     this.tn             = tn;
     this.fwg            = fwg;
     this.format         = SlaveWorker.work.format_run;
@@ -101,27 +84,62 @@ abstract class FwgThread extends Thread
     this.operation      = fwg.getOperation();
     this.expect_rmdirs  = SlaveWorker.canWeExpectDirectoryDeletes();
 
-    /* Fake threads for 'format' should not be marked pending */
-    if (tn != null)
-      tn.task_set_start_pending();
-
-    /* Each thread gets its own buffer, but only when really needed: */
+    /* Each thread gets its own buffers, but only when really needed: */
     if (this instanceof OpCreate  ||
         this instanceof OpRead    ||
         this instanceof OpWrite   ||
         this instanceof OpCopy    ||
-        this instanceof OpMove    )
+        this instanceof OpMove )
     {
-      buffer_length = fwg.getMaxXfersize();
-      if ((native_buffer = Native.allocBuffer(buffer_length)) == 0)
-        common.failure("Buffer allocation failed: ");
+      buffer_size = fwg.getMaxXfersize();
 
-      /* For format, create a default pattern: */
-      int[] array = new int[buffer_length / 4];
-      for (int i = 0; i < array.length; i++)
-        array[i] = 0x68656e6b;
-      Native.array_to_buffer(array, native_buffer);
+      /* Dedup needs a minimum of dedupunit plus extra for straddling across units: */
+      if (fwg.dedup != null)
+      {
+        buffer_size = Math.max(buffer_size, fwg.dedup.getDedupUnit());
+        buffer_size += fwg.dedup.getDedupUnit();
+      }
+
+      /* Why allocate a read buffer when not reading? Only for DV (pre/post)read */
+      /* (We don't really care about resource usage for DV anyway)               */
+      if (Validate.isRealValidate()      ||
+          this instanceof OpRead         ||
+          this instanceof OpReadWrite    ||
+          this instanceof OpWrite        ||
+          this instanceof OpCopy         ||
+          this instanceof OpMove )
+      {
+        native_read_buffer = Native.allocBuffer(buffer_size);
+      }
+
+      /* Unless this is clearly read-only, create a write buffer: */
+      boolean need_buffer = false;
+      if (tn == null)
+        need_buffer = true;
+      else if (this instanceof OpReadWrite)
+        need_buffer = true;
+      else if (!(this instanceof OpRead))
+        need_buffer = true;
+
+      //if (tn == null || !(this instanceof OpRead))
+      if (need_buffer)
+      {
+        /* Since we started writing from the pattern buffer we no */
+        /* longer need a separate write buffer:                   */
+        // This change was pulled out until further notice because
+        // of the introduction of too much unwanted dedup
+        //if (Validate.isRealValidate() || Validate.isValidateForDedup())
+        {
+          native_write_buffer = Native.allocBuffer(buffer_size);
+          Patterns.storeStartingFsdPattern(native_write_buffer, buffer_size);
+        }
+      }
     }
+
+    /* Fake threads for 'format' should not be marked pending */
+    if (tn != null)
+      tn.task_set_start_pending();
+
   }
 
   /**
@@ -129,9 +147,10 @@ abstract class FwgThread extends Thread
    */
   public void finalize() throws Throwable
   {
-    if (native_buffer != 0)
-      Native.freeBuffer(buffer_length, native_buffer);
-    VdbCount.sub(this);
+    if (native_read_buffer != 0)
+      Native.freeBuffer(buffer_size, native_read_buffer);
+    if (native_write_buffer != 0)
+      Native.freeBuffer(buffer_size, native_write_buffer);
     super.finalize();
   }
 
@@ -149,7 +168,7 @@ abstract class FwgThread extends Thread
       boolean controlled_format = common.get_debug(common.USE_FORMAT_RATE);
 
       tn.task_set_start_complete();
-      tn.task_set_running();
+      tn.waitForMasterGo();
 
       /* A format run may have to delete some old files: */
       if (/* format && */ fwg.anchor.isDeletePending())
@@ -159,23 +178,33 @@ abstract class FwgThread extends Thread
       while (!SlaveJvm.isWorkloadDone())
       {
         /* Threads can shut down because they have no more work: */
+        // I am starting to question this shutdown:
+        // Yes, there may no longer be no (new files), but there still
+        // may be some threads that need to finish writing are reading to EOF!
+        // And with select_once those things need to finish.
+        // (it appears that now have have 'touch once'.)
+        // And that is what was originally planned.
+        // So, fileselect=once stays as it is, but it would be nice to fix that.
         if (fwg.getShutdown())
           break;
 
         /* Wait for my chance to do something: */
-        try
+        if (!format && !Validate.isJournalRecoveryActive())
         {
-          queue.getPermit();
-          //common.ptod("queue: " + queue.fwg.fsd_name + " " + queue.fwg.getOperation() + " " +  queue.releases);
-        }
-        catch (InterruptedException e)
-        {
-          break;
+          try
+          {
+            queue.getPermit();
+            //common.ptod("queue: " + queue.fwg.fsd_name + " " + queue.fwg.getOperation() + " " +  queue.releases);
+          }
+          catch (InterruptedException e)
+          {
+            break;
+          }
         }
 
         if (!doOperation())
         {
-          FwgWaiter.getMyQueue(fwg).suspend();
+          FwgWaiter.getMyQueue(fwg).suspendFwg();
           break;
         }
 
@@ -198,13 +227,14 @@ abstract class FwgThread extends Thread
     /* If every task is gone, shut down: */
     synchronized (shutdown_lock)
     {
-      //Task_num.printTasks();
-
-      if (Task_num.countTasks("FwgThread", Task_num.RUNNING) == 0)
+      /* Earlier use here of countTasks("FwgThread") did not include threads */
+      /* that had not even reached 'RUNNING' and we shut down too early      */
+      if (Task_num.checkAllInTermination())
         SlaveJvm.setWorkloadDone(true);
+
     }
 
-    //common.ptod("Ending FwgThread for fwg=" + fwg.name);
+    //common.ptod("Ending FwgThread for fwg=" + fwg.fsd_name);
   }
 
 
@@ -215,11 +245,11 @@ abstract class FwgThread extends Thread
   {
     while (!SlaveJvm.isWorkloadDone())
     {
-      FileEntry fe = fwg.anchor.getFile(fwg.select_random);
+      FileEntry fe = fwg.anchor.getFile(fwg);
       if (fe == null)
         return null;
 
-      if (!fe.setBusy(true))
+      if (!fe.setFileBusyExc())
       {
         block(Blocked.FILE_BUSY);
         continue;
@@ -228,7 +258,7 @@ abstract class FwgThread extends Thread
       if (fe.isBadFile())
       {
         block(Blocked.BAD_FILE_SKIPPED);
-        fe.setBusy(false);
+        fe.setUnBusy();
         continue;
       }
 
@@ -243,8 +273,8 @@ abstract class FwgThread extends Thread
       /* If the file is already there during a format, continue: */
       if (format && fe.exists())
       {
-        common.ptod("fe: " + fe.getName() + " exists: " + fe.exists());
-        fe.setBusy(false);
+        // common.ptod("fe: " + fe.getName() + " exists: " + fe.exists());
+        fe.setUnBusy();
 
         /* If this were just a simple format we could now end it for this thread.  */
         /* However, since it may be a 'fortotal' or 'restart' we need to continue  */
@@ -256,7 +286,8 @@ abstract class FwgThread extends Thread
         /* It can be that the file count needed to reach zero here needs */
         /* to wait for an other thread to complete it's file creation.   */
         /* We'll therefore sleep a bit to prevent wasting loops:         */
-        if (fwg.anchor.anyMoreFilesToCreate() == 0)
+        //if (fwg.anchor.anyMoreFilesToCreate() == 0)
+        if (fwg.anchor.allFilesFull() )
           return null;
 
         common.sleep_some_usecs(200);
@@ -266,7 +297,7 @@ abstract class FwgThread extends Thread
       /* Block for loads of reasons: */
       if (fe.exists())
       {
-        fe.setBusy(false);
+        fe.setUnBusy();
 
         String[] txt =
         {
@@ -331,7 +362,7 @@ abstract class FwgThread extends Thread
       if (format_restart)
         fe = findFileToWrite(OUTPUT_FILE_NOT_COMPLETE);
       else
-        fe = findFileToWrite(OUTPUT_FILE_MUST_EXIST);
+        fe = findFileToWrite(OUTPUT_FILE_EITHER);
       if (fe == null)
         return false;
 
@@ -339,7 +370,15 @@ abstract class FwgThread extends Thread
 
       /* Get the first transfer size: */
       afe.xfersize = fwg.getXferSize();
-      afe.setNextSequentialWrite();
+
+      /* And get the lba for this new file.                                       */
+      /* It can (and has been proven) that this call can determine that the whole */
+      /* (likely small) file has been identified to be bad because of a DV error. */
+      /* This then results in xfersize=0                                          */
+      /* This STILL needs to be fixed though!!!                                   */
+      /* (The 'proven' one was when stopafter was accidentally recognized         */
+      /*  for mixed random+sequential workloads)                                  */
+      boolean rc = afe.setNextSequentialWrite();
     }
 
     afe.writeBlock();
@@ -353,7 +392,7 @@ abstract class FwgThread extends Thread
   /**
    * Note: open/close gives 8 getattrs and 7 access
    */
-  protected ActiveFile openFile(FileEntry fe)
+  protected ActiveFile obsolete_openFile(FileEntry fe)
   {
     if (fwg.getOperation() == Operations.WRITE || fwg.readpct >= 0)
       return openForWrite(fe);
@@ -364,13 +403,13 @@ abstract class FwgThread extends Thread
 
   protected ActiveFile openForRead(FileEntry fe)
   {
-    ActiveFile active = new ActiveFile(fe, fwg, native_buffer);
+    ActiveFile afe = new ActiveFile(fe, fwg, native_read_buffer, native_write_buffer);
     long start = Native.get_simple_tod();
-    active.openFile(true);
+    afe.openFile(true);
     fwg.blocked.count(Blocked.READ_OPENS);
     FwdStats.count(Operations.OPEN, start);
 
-    return active;
+    return afe;
   }
 
   /**
@@ -380,22 +419,29 @@ abstract class FwgThread extends Thread
   protected ActiveFile openForWrite(FileEntry fe)
   {
     /* Delete if we asked for it: */
+    //common.ptod("fwg.sequential_io: " + fwg.sequential_io + " " +
+    //            fwg.del_b4_write + " " + fe.exists());
     if (fwg.sequential_io && fwg.del_b4_write && fe.exists())
     {
+      //common.ptod("fwg.stopafter == 0:  " + fwg.stopafter);
+      //common.ptod("fe.getCurrentSize(): " + fe.getCurrentSize());
+      //common.ptod("fe.getReqSize():     " + fe.getReqSize());
       if (fwg.stopafter == 0 || fe.getCurrentSize() == fe.getReqSize())
         fe.deleteFile(fwg);
     }
 
-    ActiveFile afe = new ActiveFile(fe, fwg, native_buffer);
+    ActiveFile afe = new ActiveFile(fe, fwg, native_read_buffer, native_write_buffer);
     long start = Native.get_simple_tod();
     afe.openFile(false);
     fwg.blocked.count(Blocked.WRITE_OPENS);
     FwdStats.count(Operations.OPEN, start);
 
-    /* Count the creates: */
-    if (fwg.sequential_io && fwg.del_b4_write && !fe.exists())
+    /* Count the creates done for writes (operation=create counts himself): */
+    //if (fwg.sequential_io && fwg.del_b4_write && !fe.exists())
+    if (fwg.getOperation() == Operations.WRITE && !fe.exists())
     {
-      fwg.blocked.count(Blocked.FILE_CREATES);
+      //common.where();
+      //fwg.blocked.count(Blocked.FILE_CREATES);
       FwdStats.count(Operations.CREATE, start);
     }
 
@@ -424,15 +470,15 @@ abstract class FwgThread extends Thread
       if (!format &&
           (fwg.getOperation() == Operations.COPY ||
            fwg.getOperation() == Operations.MOVE))
-        fe = fwg.target_anchor.getFile(fwg.select_random);
+        fe = fwg.target_anchor.getFile(fwg);
       else
-        fe = fwg.anchor.getFile(fwg.select_random);
+        fe = fwg.anchor.getFile(fwg);
       if (fe == null)
         return null;
 
       /* If file already busy, try an other: */
-      //common.ptod("fe: " + fe.getName());
-      if (!fe.setBusy(true))
+      boolean rc = (fwg.del_b4_write) ? fe.setFileBusyExc() : fe.setFileBusy();
+      if (!rc)
       {
         block(Blocked.FILE_BUSY);
         continue;
@@ -441,21 +487,14 @@ abstract class FwgThread extends Thread
       if (fe.isBadFile())
       {
         block(Blocked.BAD_FILE_SKIPPED);
-        fe.setBusy(false);
-        continue;
-      }
-
-      if (!fe.getParent().exist())
-      {
-        block(Blocked.MISSING_PARENT);
-        fe.setBusy(false);
+        fe.setUnBusy();
         continue;
       }
 
       /* The file must already exist: */
       if (find_option == OUTPUT_FILE_MUST_EXIST && !fe.exists())
       {
-        fe.setBusy(false);
+        fe.setUnBusy();
 
         String[] txt =
         {
@@ -472,10 +511,11 @@ abstract class FwgThread extends Thread
         continue;
       }
 
+
       /* The file may not already exist: */
       if (find_option == OUTPUT_FILE_MAY_NOT_EXIST && fe.exists())
       {
-        fe.setBusy(false);
+        fe.setUnBusy();
 
         String[] txt =
         {
@@ -496,7 +536,7 @@ abstract class FwgThread extends Thread
       //            " isfull: " + fe.isFull());
       if (find_option == OUTPUT_FILE_NOT_COMPLETE && fe.exists() && fe.isFull())
       {
-        fe.setBusy(false);
+        fe.setUnBusy();
 
         block(Blocked.FILE_IS_FULL);
 
@@ -518,10 +558,12 @@ abstract class FwgThread extends Thread
       //  continue;
       //}
 
+      /* find_option == OUTPUT_FILE_EITHER */
+
       /* Format requires us to stop after the last file: */
       if (format && fe.isFormatComplete())
       {
-        fe.setBusy(false);
+        fe.setUnBusy();
         return null;
       }
 
@@ -529,7 +571,15 @@ abstract class FwgThread extends Thread
       if (format && fe.isFull())
       {
         fe.setFormatComplete(true);
-        fe.setBusy(false);
+        fe.setUnBusy();
+        continue;
+      }
+
+      /* Of course, the parent must already be there: */
+      if (!fe.getParent().exist())
+      {
+        fe.setUnBusy();
+        block(Blocked.MISSING_PARENT);
         continue;
       }
 
@@ -552,14 +602,14 @@ abstract class FwgThread extends Thread
   {
     while (!SlaveJvm.isWorkloadDone())
     {
-      FileEntry fe = fwg.anchor.getFile(fwg.select_random);
+      FileEntry fe = fwg.anchor.getFile(fwg);
 
       /* 'null' means Journal recovery just completed: */
       if (fe == null)
         return null;
 
       /* If file is busy, try an other one: */
-      if (!fe.setBusy(true))
+      if (!fe.setFileBusy())
       {
         block(Blocked.FILE_BUSY);
         continue;
@@ -568,14 +618,14 @@ abstract class FwgThread extends Thread
       if (fe.isBadFile())
       {
         block(Blocked.BAD_FILE_SKIPPED);
-        fe.setBusy(false);
+        fe.setUnBusy();
         continue;
       }
 
       /* The file must already exist: */
       if (!fe.exists())
       {
-        fe.setBusy(false);
+        fe.setUnBusy();
         block(Blocked.FILE_MUST_EXIST);
 
         if ((operation == Operations.MOVE || operation == Operations.COPY) &&
@@ -588,6 +638,7 @@ abstract class FwgThread extends Thread
           "Vdbench is trying to read from a file, but no files are available, and no",
           "threads are currently active creating new files"
         };
+
         if (!canWeGetMoreFiles(txt))
           return null;
 
@@ -602,14 +653,14 @@ abstract class FwgThread extends Thread
         if (fwg.anchor.getDVMap().anyBadBlocks(fe.getFileStartLba(), fe.getCurrentSize()))
         {
           //fe.setBadFile();
-          fe.setBusy(false);
+          fe.setUnBusy();
           continue;
         }
 
         /* File only will be read if the file has ever been written: */
         if (!fwg.anchor.getDVMap().anyValidBlocks(fe.getFileStartLba(), fe.getCurrentSize()))
         {
-          fe.setBusy(false);
+          fe.setUnBusy();
           continue;
         }
       }
@@ -617,7 +668,7 @@ abstract class FwgThread extends Thread
       /* The file may not be empty: */
       if (fe.getCurrentSize() == 0)
       {
-        fe.setBusy(false);
+        fe.setUnBusy();
         block(Blocked.FILE_NOT_FULL);
         continue;
       }
@@ -785,6 +836,9 @@ abstract class FwgThread extends Thread
 
   protected void block(int reason, String txt)
   {
+    //if (reason == Blocked.FILE_MAY_NOT_EXIST)
+    //  common.where(8);
+
     //Trace.trace("c" + getName() + " " + tn.task_number + " " + reason);
 
     consecutive_blocks++;
@@ -849,7 +903,26 @@ abstract class FwgThread extends Thread
 
         Blocked.printTrace();
         Blocked.printAndResetCounters();
+
+        /* This Vector is here to get away from ptod_lock: */
         Vector msg = new Vector(16);
+
+        for (Directory dir : fwg.anchor.getDirList())
+        {
+          if (dir.isBusyNoSync())
+          {
+            msg.add(String.format("dir=%s,busy=%b", dir.getFullName(), dir.isBusyNoSync()));
+            //msg.add(dir.last_busy);
+          }
+        }
+
+        for (FileEntry fe : fwg.anchor.getFileList())
+        {
+          if (fe.isBusy())
+            msg.add(String.format("file=%s,busy=%b", fe.getFullName(), fe.isBusy()));
+        }
+
+
         msg.add("Thread: " + Thread.currentThread().getName());
         msg.add("");
         msg.add("last_ok_request: " + new Date(last_ok_request));

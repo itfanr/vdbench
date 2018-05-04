@@ -1,26 +1,8 @@
 package Utils;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -37,8 +19,8 @@ import java.nio.channels.*;
  */
 public class Fput
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.";
 
   private String      full_name        = null;
   private PrintWriter pw               = null;
@@ -61,7 +43,10 @@ public class Fput
   }
   public Fput(String fname, boolean append)
   {
+    /* fname some times ends up with double separators. Fix it: */
     full_name = fname;
+    full_name = full_name.replace(File.separator + File.separator, File.separator);
+
     open_files.add(this);
 
     if (fname.startsWith("null"))
@@ -109,7 +94,7 @@ public class Fput
   public void close()
   {
     if (!open_files.remove(this))
-      common.failure("TRying to close an Fput() file that is not open");
+      common.failure("Trying to close an Fput() file that is not open");
 
 
     try
@@ -125,6 +110,15 @@ public class Fput
       common.failure(e);
     }
   }
+
+  public static String getTmpDir()
+  {
+    String ret = System.getProperty("java.io.tmpdir");
+    if (!ret.endsWith(File.separator))
+      ret += File.separator;
+    return ret;
+  }
+
 
   public static void closeAll()
   {
@@ -142,7 +136,18 @@ public class Fput
    * html files are immediately flushed because it is possible that I will
    * be looking at it during the run!
    */
-  public void println(String line)
+  public void print(String format, Object ... args)
+  {
+    if (args.length > 0)
+      pw.print(String.format(format, args));
+    else
+      pw.print(format);
+  }
+  public String  println(String format, Object ... args)
+  {
+    return println(String.format(format, args));
+  }
+  public String println(String line)
   {
     if (pw == null)
     {
@@ -156,6 +161,8 @@ public class Fput
     if (full_name.endsWith("html"))
       pw.flush();
     //common.chk_error(pw);
+
+    return  line;
   }
 
   public void flush()
@@ -169,13 +176,45 @@ public class Fput
    */
   public static void chmod(String fname)
   {
+    if (common.onWindows())
+      return;
+
     /* fiddling with stdin and stdout causes problems: */
     if (fname.endsWith("-"))
       return;
 
-    if (!common.onWindows())
+    if (common.onSolaris())
+      Vdb.Native.chmod(fname);
+
+    else
       OS_cmd.execute("chmod 777 " + fname, false);
   }
+
+  // See: http://www.devx.com/Java/Article/22018/1954
+  // for future reference.
+  public static String createTempFileName(String one, String two)
+  {
+    return createTempFile(one, two).getAbsolutePath();
+  }
+  public static String createTempFileName(String two)
+  {
+    return createTempFile("swat", two).getAbsolutePath();
+  }
+  public static File createTempFile(String one, String two)
+  {
+    try
+    {
+      File fptr = File.createTempFile(one, two);
+      fptr.deleteOnExit();
+      return fptr;
+    }
+    catch (Exception e)
+    {
+      common.failure(e);
+    }
+    return null;
+  }
+
 
 
   public static void main (String args[]) throws IOException

@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -57,8 +39,8 @@ import java.util.concurrent.*;
  */
 class FwgWaiter extends Thread
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.";
 
   private static Task_num tn;
   private static HashMap  queues_map = null;
@@ -69,7 +51,6 @@ class FwgWaiter extends Thread
 
   public FwgWaiter(Task_num t, Vector fwgs, double fwd_rate, int dist)
   {
-    VdbCount.count(this);
     setName("FwgWaiter");
     tn           = t;
     distribution = dist;
@@ -113,21 +94,33 @@ class FwgWaiter extends Thread
     try
     {
       tn.task_set_start_complete();
-      tn.task_set_running();
+      tn.waitForMasterGo();
       initialize();
 
       long tod = Native.get_simple_tod();
 
-      int ctr = 0;
       while (!SlaveJvm.isWorkloadDone())
       {
-        /* Look for the lowest starting time: */
-        FwgQueue lowq = queues[0];
-        for (int i = 1; i < queues.length; i++)
+        /* Look for the lowest (non-suspended) starting time: */
+        FwgQueue lowq = null;
+        for (int i = 0; i < queues.length; i++)
         {
-          if (queues[i].next_arrival < lowq.next_arrival)
+          if (queues[i].isSuspended())
+            continue;
+
+          if (lowq == null || queues[i].next_arrival < lowq.next_arrival)
             lowq = queues[i];
         }
+
+        /* Didn't find anything, all queues suspended. Just give it a try again later: */
+        if (lowq == null)
+        {
+          common.sleep_some(10);
+          continue;
+        }
+        //common.ptod("lowq: %-15s %d %b", lowq.fwg.anchor.getAnchorName(), lowq.next_arrival, lowq.isSuspended());
+
+
 
         while (true)
         {
@@ -144,14 +137,23 @@ class FwgWaiter extends Thread
         /* Now release the semaphore, but only if we are not running too far behind: */
         try
         {
-          //common.ptod("bwaiting for lowq" + lowq.fwg.fsd_name);
           if (!lowq.isSuspended())
+          {
             getUntilDone(lowq.max_queue_sema, "max_queue_sema " + lowq.fwg.fsd_name );
-          //if (lowq.max_queue_sema.availablePermits() < 100)
-          //  common.ptod("ewaiting for lowq" + lowq.fwg.fsd_name + " " + lowq.max_queue_sema.availablePermits());
-          lowq.work_avail_sema.release();
-          lowq.releases++;
-          //common.ptod("releases: " + lowq.fwg.fsd_name + " " + lowq.fwg.getOperation() + " " + lowq.releases);
+            lowq.work_avail_sema.release();
+            //lowq.releases++;
+            //if (lowq.releases %10000 == 0)
+            //  common.ptod("releases: " + lowq.fwg.fsd_name + " " + lowq.fwg.getOperation() + " " + lowq.releases);
+          }
+          else
+          {
+            //common.ptod("bwaiting for lowq" + lowq.fwg.fsd_name);
+            /* This FwgEntry is suspended. That means we'll ignore its requests. */
+            /* Sleep a little. Not too long, because we don't want to hold up    */
+            /* any work that may be pending for a different FwgEntry.            */
+            /* (Without the sleep this thread could appear to be in a loop)      */
+            common.sleep_some_usecs(10);
+          }
         }
         catch (InterruptedException e)
         {
@@ -238,8 +240,10 @@ class FwgQueue
   boolean   suspended = false;
   FwgEntry  fwg;
   boolean   max_rate_requested = false;
+
+  private static int MAX_QUEUE_SEMA_SIZE = 2000;
   Semaphore work_avail_sema = new Semaphore(0);
-  Semaphore max_queue_sema  = new Semaphore(2000);
+  Semaphore max_queue_sema  = new Semaphore(MAX_QUEUE_SEMA_SIZE);
   int       releases = 0;
 
   public FwgQueue(FwgEntry f, double rate, int dist, int seq_in)
@@ -260,15 +264,18 @@ class FwgQueue
       fwd_rate = 99999999;
 
     inter_arrival = (long) (1000000000. * 100. / fwg.skew / fwd_rate);
-    //common.ptod("inter_arrival: " + inter_arrival + " skew: " + fwg.skew + " rate: " + fwd_rate);
 
-    /* Set first start time: */
+    // there is a problem with fwdrate=max and then fwg results starting in bunches!
+
+    /* Set first start time: exponential: */
     if (distribution == 0)
       next_arrival = (long) ownmath.exponential(inter_arrival);
 
+    /* Uniform: */
     else if (distribution == 1)
       next_arrival = (long) ownmath.uniform(0, inter_arrival * 2);
 
+    /* Deterministic: */
     else
     {
       /* Make sure not every thread starts at the same time: */
@@ -281,22 +288,25 @@ class FwgQueue
 
     /* Though for maxrate we don't care: */
     max_rate_requested = (fwd_rate == RD_entry.MAX_RATE);
+
+    //common.ptod("inter_arrival: " + inter_arrival + " skew: " + fwg.skew + " rate: " + fwd_rate + " " + next_arrival);
   }
 
   public synchronized boolean isSuspended()
   {
     return suspended;
   }
-  public synchronized void suspend()
+  public synchronized void suspendFwg()
   {
     suspended = true;
     //max_queue_sema.release(work_avail_sema.drainPermits());
     //
-    /* Just in case our run() method is blocked for this: */
+    /* In case anyone is waiting: */
+    work_avail_sema.release(1);
     max_queue_sema.release(1);
   }
 
-  public synchronized void restart()
+  public synchronized void restartFwg()
   {
     //max_queue_sema.release(work_avail_sema.drainPermits());
     //common.ptod("max_queue_sema:  " + max_queue_sema.availablePermits());
@@ -304,7 +314,8 @@ class FwgQueue
 
     /* Clean and restart the semaphores: */
     work_avail_sema.drainPermits();
-    max_queue_sema.release(2000);
+    max_queue_sema.drainPermits();
+    max_queue_sema.release(MAX_QUEUE_SEMA_SIZE);
     suspended = false;
   }
 

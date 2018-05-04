@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -28,8 +10,8 @@ package Vdb;
 
 class OpCreate extends FwgThread
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   private static boolean debug = common.get_debug(common.REPORT_CREATES);
 
@@ -45,12 +27,26 @@ class OpCreate extends FwgThread
    *
    * The Java create gives me 7 get, 2 lookup, 2 access, and 1 create
    * The JNI  create gives me 5 get, 2 lookup, 2 access, and 1 create
+   *
+   *
+   * Note: when used for format, this doOperation() call ONLY returns when
+   * all files have been done.
+   * Of course 'done' appears to not always be correct.....
    */
   protected boolean doOperation()
   {
+    boolean debug = false;
+
+    // BTW: 'OpFormat', faking three different operations sees operation as read ????
+    //common.ptod("fwg.getOperation(): " + Operations.getOperationText(fwg.getOperation()));
+
+    // Note: 'findNonExistingFile' includes format=restart's 'file not full'
     FileEntry fe = findNonExistingFile();
     if (fe == null)
+    {
+      if (debug) common.ptod("doOperation1 false");
       return false;
+    }
 
     //* Create the file and filler up: */
     long start = Native.get_simple_tod();
@@ -60,19 +56,40 @@ class OpCreate extends FwgThread
     if (fwg.getOperation() == Operations.CREATE)
       afe.closeFile();
 
+    /* Experiment creating sparse files */
+    else if (SlaveWorker.work.format_run && common.get_debug(common.FILE_FORMAT_TRUNCATE))
+    {
+      long rc = Native.truncateFile(afe.getHandle(), afe.getFileEntry().getReqSize());
+      if (rc != 0)
+        common.failure("ftruncate of file %s for %,d bytes failed, error code %d",
+                       afe.getFileEntry().getFullName(),
+                       afe.getFileEntry().getReqSize(), rc);
+      afe.closeFile();
+      fwg.blocked.count(Blocked.SPARSE_CREATES);
+      if (debug) common.ptod("doOperation2 true");
+      return true;
+    }
+
     else
     {
-      /* Keep writing this file until it is full: */
+      /* Keep writing this file until it is full, but if the run is done */
+      /* Do not finish the file: */
       while (true)
       {
         if (!doSequentialWrite(true))
           break;
+        if (SlaveJvm.isWorkloadDone())
+        {
+          afe.closeFile();
+          break;
+        }
       }
     }
 
     /* File is closed by doSequentialWrite() */
-    fwg.blocked.count(Blocked.FILE_CREATES);
+    //fwg.blocked.count(Blocked.FILE_CREATES);
     FwdStats.count(Operations.CREATE, start);
+    if (debug) common.ptod("doOperation3 true ");
 
     return true;
   }

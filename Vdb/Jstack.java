@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -37,8 +19,8 @@ import Utils.*;
  */
 public class Jstack
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   String pid;
   String program;
@@ -46,6 +28,8 @@ public class Jstack
   static Vector programs = new Vector(64, 0);
   static String jstack = null;
   private static Fput fp = null;
+
+  private static boolean skip_streams = false;
 
 
   public Jstack(String p, String prog)
@@ -75,7 +59,7 @@ public class Jstack
       runWindows();
 
     else
-      common.failure("Current platform not supported (yet?)");
+      common.failure("Vdbench jstack: Current platform not supported (yet?)");
   }
 
   private static void runSolaris()
@@ -113,7 +97,16 @@ public class Jstack
       String start = st.nextToken();
 
       String program = line.substring(line.indexOf(start));
-      print("program: " + program);
+      print("program: pid=" + pidx + " " + program);
+
+      common.ptod("pidx: " + pidx);
+      common.ptod("common.getProcessId(): " + common.getProcessId());
+      System.exit(777);
+      if (Integer.parseInt(pidx) == common.getProcessId())
+      {
+        common.ptod("Skipping myself");
+        continue;
+      }
 
       Jstack js = new Jstack(pidx, program);
       programs.add(js);
@@ -123,7 +116,7 @@ public class Jstack
   private static void runWindows()
   {
     OS_cmd ocmd = new OS_cmd();
-    ocmd.addText("ps -ef");
+    ocmd.addText("xps -ef");         // force use of tasklist!
     ocmd.setStdout();
     ocmd.execute();
 
@@ -133,6 +126,7 @@ public class Jstack
       for (int i = 0; i < lines.length; i++)
       {
         String line = lines[i];
+        //common.ptod("line: " + line);
         if (line.indexOf("java") == -1)
           continue;
         if (line.indexOf("jstack") != -1)
@@ -140,23 +134,29 @@ public class Jstack
         if (line.indexOf("javaw") != -1)
           continue;
 
+        String[] split = line.trim().split(" +");
+        String program;
 
-        StringTokenizer st = new StringTokenizer(line);
-        if (st.countTokens() < 9)
+        if (split.length == 8)
+          program = split[7];
+        else if (split.length == 9)
+          program = split[8];
+        else
           continue;
 
-        st.nextToken();
-        String pidx = st.nextToken();
-        st.nextToken();
-        st.nextToken();
-        st.nextToken();
-        st.nextToken();
-        st.nextToken();
-        st.nextToken();
-        String start = st.nextToken();
+        String pidx = split[1];
 
-        String program = line.substring(line.indexOf(start));
         print("program: " + program);
+
+
+        common.ptod("pidx: " + pidx);
+        common.ptod("common.getProcessId(): " + common.getProcessId());
+        System.exit(777);
+        if (Integer.parseInt(pidx) == common.getProcessId())
+        {
+          common.ptod("Skipping myself");
+          continue;
+        }
 
         Jstack js = new Jstack(pidx, program);
         programs.add(js);
@@ -176,10 +176,19 @@ public class Jstack
         for (int i = 0; i < lines.length; i++)
         {
           String line = lines[i].trim().toLowerCase();
+          //common.ptod("line: " + line);
           if (line.indexOf("java.exe") != -1)
           {
             String[] split = line.split(" +");
             Jstack js = new Jstack(split[1], split[0]);
+
+            String pidx = split[1];
+            if (Integer.parseInt(pidx) == common.getProcessId())
+            {
+              common.ptod("Skipping myself");
+              continue;
+            }
+
             programs.add(js);
             print("program: " + line);
           }
@@ -209,20 +218,22 @@ public class Jstack
       lines = ocmd.getStdout();
       boolean vdbmain   = false;
       boolean slavejvm  = false;
-      boolean nwmonitor = false;
+      boolean stream    = false;
       for (int j = 0; j < lines.length; j++)
       {
-        if (lines[j].indexOf("Vdb.Vdbmain")  != -1) vdbmain   = true;
-        if (lines[j].indexOf("Vdb.SlaveJvm") != -1) slavejvm  = true;
-        if (lines[j].indexOf("NwMonitor")    != -1) nwmonitor = true;
+        //common.ptod("lines[j]: " + lines[j]);
+        if (lines[j].indexOf("Vdb.Vdbmain")    != -1)  vdbmain  = true;
+        if (lines[j].indexOf("Vdb.SlaveJvm")   != -1)  slavejvm = true;
+        if (lines[j].indexOf("Get_cmd_stream") != -1)  stream   = true;
       }
 
-      if (nwmonitor)
+      if (stream && skip_streams)
       {
-        print("Skipping NwMonitor");
+        print("Skipping Get_cmd_stream");
         continue;
       }
-      else if (vdbmain)
+
+      if (vdbmain)
         print("Jstatus for VdbMain " + js.pid + " " + js.program);
       else if (slavejvm)
         print("Jstatus for SlaveJvm " + js.pid + " " + js.program);
@@ -271,7 +282,7 @@ public class Jstack
       if (split.length <= 2)
         break;
       //print("index: " + index + " " + line);
-      block.add(line.substring(21));
+      block.add(line.substring(8));
       //print("add block: " + count + " " + line);
     }
 
@@ -280,10 +291,14 @@ public class Jstack
     return block;
   }
 
-  private static void parse(String fname)
+  // Not sure anymore what this is for :-)
+  // Likely to remove garbage?
+  private static void parseExistingJstackOutput(String fname)
   {
+    int gc_skips = 0;
     lines       = Fget.readFileToArray(fname);
     String line = null;
+    fp          = new Fput("jstack2.txt");
 
     top:
     for (index = 0; index < lines.length; index++)
@@ -292,7 +307,7 @@ public class Jstack
 
       if (line.indexOf("Jstack for") != -1)
       {
-        System.out.println(line);
+        fp.println(line);
         continue;
       }
       if (line.indexOf("stdout:") == -1)
@@ -305,7 +320,7 @@ public class Jstack
       //  continue;
 
       /* Get a block of info: */
-      Vector block = getBlock();
+      Vector <String> block = getBlock();
       if (block.size() == 0)
         continue;
       line = (String) block.firstElement();
@@ -314,12 +329,18 @@ public class Jstack
       if (line.indexOf("Attach Listener") != -1)
         continue;
 
-      if (line.indexOf("IO_task") != -1)
+      if (line.contains("GC task thread#"))
       {
-        String line3 = (String) block.elementAt(2);
-        if (line3.indexOf("multi_io") != -1)
-          continue;
+        gc_skips++;
+        continue;
       }
+
+      //if (line.indexOf("IO_task") != -1)
+      //{
+      //  String line3 = (String) block.elementAt(2);
+      //  if (line3.indexOf("multi_io") != -1)
+      //    continue;
+      //}
 
       String[] skips =
       {
@@ -343,21 +364,34 @@ public class Jstack
         if (line.indexOf(skips[i]) != -1)
           continue top;
       }
-      if (line.indexOf("WG_task") != -1)
-        continue;
+      //if (line.indexOf("WG_task") != -1)
+      //  continue;
 
+      fp.print(String.format("block %4d: ", count));
       for (int i = 0; i < block.size(); i++)
-        System.out.println("block: " + count + " " + block.elementAt(i));
-      System.out.println();
+        fp.print(block.elementAt(i).trim() + " ");
+      fp.println("");
     }
+
+    fp.println("Skipped %d 'GC task threads'", gc_skips);
+
+    fp.close();
   }
 
 
   public static void main(String[] args)
   {
+    Getopt getopt = new Getopt(args, "j:d:s", 99);
+    getopt.print("Jstack");
+    if (!getopt.isOK())
+    {
+      common.failure("Parameter scan error");
+    }
+
+    /* parse an output file, and print just one line per 'block'. */
     if (args.length == 3 && args[1].equals("-"))
     {
-      parse(args[2]);
+      parseExistingJstackOutput(args[2]);
       return;
     }
 
@@ -395,7 +429,12 @@ public class Jstack
 
     doJstack();
 
+    fp.println("Jstack ended at %s", new Date());
+
     fp.close();
+
+    /* Experiment: */
+    parseExistingJstackOutput("jstack.txt");
   }
 }
 

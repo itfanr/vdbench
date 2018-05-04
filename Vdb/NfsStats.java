@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -35,8 +17,8 @@ import Utils.*;
  */
 public class NfsStats
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.";
 
   private static NfsV3 nfs3_old   = new NfsV3();
   private static NfsV3 nfs3_new   = new NfsV3();
@@ -71,6 +53,10 @@ public class NfsStats
 
   /**
    * Obtain kstat statistics for all three NFS versions.
+   *
+   * Note: I think it is possible that when this code is called and auto nfs
+   * mount has just beenm done or not done yet, the Kstat instance may not exist
+   * yet.
    */
   public static void getAllNfsDeltasFromKstat()
   {
@@ -96,7 +82,6 @@ public class NfsStats
         common.ptod("getAllNfsStats(): no data found for nfs version4");
         nfs4_delta = null;
       }
-
     }
 
     if (nfs3_delta != null)
@@ -203,6 +188,39 @@ public class NfsStats
     }
 
     report.println(common.tod() + buf.toString());
+  }
+
+  /**
+   * Vertical 'end' report for total statistics:
+   */
+  public static void NfsPrintVertical(Report      report,
+                                      NamedData   nameddata)
+  {
+    String[] labels = nameddata.getFieldTitles();
+
+    /* Create total: */
+    double total_rate = 0;
+    for (int i = 0; i < labels.length; i++)
+      total_rate += nameddata.getRate(i);
+
+    if (total_rate == 0)
+      return;
+
+    /* Report individuals: */
+    report.println("");
+    report.println("Non-zero rates. Note that the %% is NOT expected to represent Vdbench skew:");
+    for (int i = 0; i < labels.length; i++)
+    {
+      double rate = nameddata.getRate(i);
+
+      /* Including %% gets confusing since they have NOT relation to Operation count, */
+      /* but it is still useful. */
+      if (rate > 0)
+        report.println("%s %-12s %5.0f %5.2f%%", common.tod(), labels[i], rate,
+                       rate * 100. / total_rate);
+    }
+
+
   }
 
 

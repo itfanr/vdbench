@@ -1,26 +1,8 @@
 package Vdb;
 
 /*
- * Copyright 2010 Sun Microsystems, Inc. All rights reserved.
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
- *
- * The contents of this file are subject to the terms of the Common
- * Development and Distribution License("CDDL") (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the License at http://www.sun.com/cddl/cddl.html
- * or ../vdbench/license.txt. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * When distributing the software, include this License Header Notice
- * in each file and include the License file at ../vdbench/licensev1.0.txt.
- *
- * If applicable, add the following below the License Header, with the
- * fields enclosed by brackets [] replaced by your own identifying information:
- * "Portions Copyrighted [year] [name of copyright owner]"
+ * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
  */
-
 
 /*
  * Author: Henk Vandenbergh.
@@ -36,8 +18,8 @@ import Utils.Format;
  */
 public class FwdPrint
 {
-  private final static String c = "Copyright (c) 2010 Sun Microsystems, Inc. " +
-                                  "All Rights Reserved. Use is subject to license terms.";
+  private final static String c =
+  "Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.";
 
   String hdr1    = null;
   String hdr2    = null;
@@ -118,7 +100,7 @@ public class FwdPrint
       String tmp = dots1 + hdr1 + dots2 ;
 
       //common.plog("getHeader1a:==>" + tmp + "<===");
-      return tmp;
+      return " " + tmp;
     }
 
     else
@@ -130,7 +112,7 @@ public class FwdPrint
       String tmp = dots1 + hdr1 + dots2;
 
       //common.plog("getHeader1b:==>" + tmp + "<===");
-      return tmp;
+      return " " + tmp;
     }
   }
 
@@ -142,13 +124,13 @@ public class FwdPrint
   {
     if (hdr2 != null)
     {
-      String txt = Format.f("%" + width2 + "s", hdr2);
+      String txt = Format.f(" %" + width2 + "s", hdr2);
       return txt;
     }
 
     else
     {
-      String txt = Format.f("%" + width2a + "s", hdr2a) +
+      String txt = Format.f(" %" + width2a + "s", hdr2a) +
                    Format.f(" %" + width2b + "s", hdr2b);
       return txt;
     }
@@ -157,10 +139,14 @@ public class FwdPrint
 
   /**
    * Return properly edited String for a single double value
+   *
+   * Be aware: using the own Format.f("%8F") capital F does the "fit a number"
+   * trick that String.format does NOT have!
    */
   protected String getData(double data)
   {
-    return Format.f("%" + fmt2 + "F", data);
+    return Format.f(" %" + fmt2 + "F", data);
+    //return String.format(" %" + fmt2 + "f", data);
   }
 
 
@@ -169,8 +155,11 @@ public class FwdPrint
    */
   protected String getData(double data1, double data2)
   {
-    String txt = Format.f("%" + fmt2a + "F", data1) +
+    String txt = Format.f(" %" + fmt2a + "F", data1) +
                  Format.f(" %" + fmt2b + "F", data2);
+
+    //String txt = String.format(" %" + fmt2a + "f %" + fmt2b + "f", data1, data2);
+
     return txt;
   }
 
@@ -179,7 +168,8 @@ public class FwdPrint
    */
   protected String getData(String data)
   {
-    return Format.f("%" + width2 + "s", data);
+    return Format.f(" %" + width2 + "s", data);
+    //return String.format(" %" + width2 + "s", data);
   }
 
 
