@@ -1,1 +1,1 @@
-vdbench502
+vdbench-5.04.06
